@@ -1,0 +1,24 @@
+{
+  "name": "data-analytics-saas",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "apps/ml-service"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:api": "npm run dev --workspace apps/api",
+    "dev:ml-service": "python -m uvicorn main:app --reload --port 8000 apps/ml-service",
+    "build:web": "npm run build --workspace apps/web",
+    "build:api": "npm run build --workspace apps/api",
+    "dev": "concurrently -k -n WEB,API,ML \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:ml-service\""
+  },
+  "dependencies": {
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}
