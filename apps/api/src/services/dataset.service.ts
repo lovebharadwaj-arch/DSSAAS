@@ -70,3 +70,26 @@ export async function deleteDataset(
 
   return (result.rowCount ?? 0) > 0;
 }
+
+export async function getDatasetForTraining(
+  organizationId: string,
+  datasetId: string,
+) {
+  const result = await pool.query(
+    `SELECT
+       id,
+       organization_id,
+       name,
+       original_filename,
+       storage_key,
+       status
+     FROM public.datasets
+     WHERE organization_id = $1
+       AND id = $2
+       AND status = 'ready'
+     LIMIT 1`,
+    [organizationId, datasetId],
+  );
+
+  return result.rows[0] ?? null;
+}

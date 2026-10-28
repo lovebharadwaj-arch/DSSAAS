@@ -16,6 +16,11 @@ from service.csv_corrector.type_inference import infer_schema
 from service.csv_corrector.exporter import export_csv
 from typing import Any, Literal
 
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
+
+from service.ml_training_service import train_model
+
 
 app = FastAPI(title="Analytics SaaS ML Service")
 
@@ -256,3 +261,24 @@ async def check_csv_endpoint(
         await file.close()
 
 
+class TrainingRequest(BaseModel):
+    rows: list[dict[str, Any]] = Field(min_length=10)
+    target_column: str
+    task: Literal["classification", "regression"]
+    test_size: float = Field(default=0.2, ge=0.1, le=0.4)
+
+
+@app.post("/models/train")
+def train_ml_model(request: TrainingRequest):
+    try:
+        return train_model(
+            rows=request.rows,
+            target_column=request.target_column,
+            task=request.task,
+            test_size=request.test_size,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error

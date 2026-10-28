@@ -18,6 +18,7 @@ import datasetProfileRoutes from "./routes/datasetProfile.routes.ts";
 import csvCorrectorRoutes from "./routes/csvCorrector.routes.ts";
 import datasetRoutes from "./routes/dataset.route.ts";
 import datasetUploadRoutes from "./routes/datasetUpload.routes.ts";
+import mlRoutes from "./routes/ML.routes.ts";
 import organizationRoutes from "./routes/organization.route.ts";
 import organizationMemberRoutes from "./routes/organizationMember.route.ts";
 
@@ -84,3 +85,5 @@ app.use("/api/organizations/:organizationId/datasets", datasetRoutes);
 app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 app.use("/api", csvCorrectorRoutes);
+
+app.use("/api/models", mlRoutes);

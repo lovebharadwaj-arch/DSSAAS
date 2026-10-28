@@ -18,6 +18,8 @@ import { columnDistributionHandler } from "../controllers/columnDistribution.con
 import { previewDataCleaningHandler } from "../controllers/dataCleaning.controller.ts";
 import { previewDatasetHandler } from "../controllers/dataSetPreview.controller.ts";
 
+import { trainDatasetModelHandler } from "../controllers/mlTraining.controller.ts";
+
 const router = Router({ mergeParams: true });
 
 router.use(authenticateToken);
@@ -47,5 +49,7 @@ router.post("/:datasetId/distribution", columnDistributionHandler);
 router.post("/:datasetId/clean/preview", previewDataCleaningHandler);
 
 router.post("/:datasetId/clean/save", saveCleanedDatasetVersionHandler);
+
+router.post("/:datasetId/train", trainDatasetModelHandler);
 
 export default router;

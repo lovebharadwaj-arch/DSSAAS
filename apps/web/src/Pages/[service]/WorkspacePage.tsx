@@ -1,10 +1,14 @@
+import type { LucideIcon } from "lucide-react";
 import {
+  AlertCircle,
   ArrowRight,
   Check,
   ChevronLeft,
+  Database,
   Eye,
   FileSpreadsheet,
   Gauge,
+  LoaderCircle,
   MessageSquareText,
   Network,
   Play,
@@ -13,25 +17,32 @@ import {
   SlidersHorizontal,
   Sparkles,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  getDatasetPreview,
+  getDatasets,
+  trainDatasetModel,
+  type DatasetOption,
+  type DatasetPreview,
+  type MLTrainingResponse,
+} from "../../service/mlTrainingService";
 
 type ServiceKey = "ML" | "DL" | "NLP" | "Computer Vision" | "AI";
 
-const serviceInfo: Record<
-  ServiceKey,
-  {
-    subtitle: string;
-    description: string;
-    icon: React.ElementType;
-    color: string;
-    tag: string;
-    bullets: string[];
-  }
-> = {
+type ServiceInfo = {
+  subtitle: string;
+  description: string;
+  icon: LucideIcon;
+  color: string;
+  tag: string;
+  bullets: string[];
+};
+
+const serviceInfo: Record<ServiceKey, ServiceInfo> = {
   ML: {
     subtitle: "Machine Learning",
     description:
-      "Train predictive models, evaluate performance, and understand the patterns in your data.",
+      "Train predictive models, evaluate performance, and understand patterns in your organization's data.",
     icon: Gauge,
     color: "blue",
     tag: "Predictive analytics",
@@ -79,6 +90,146 @@ const serviceInfo: Record<
   },
 };
 
+const tasks: Record<ServiceKey, string[]> = {
+  ML: ["Classification", "Regression", "Clustering"],
+  DL: ["Neural network", "Image model", "Sequence model"],
+  NLP: [
+    "Sentiment analysis",
+    "Text classification",
+    "Entity extraction",
+    "Text summarization",
+  ],
+  "Computer Vision": [
+    "Image classification",
+    "Object detection",
+    "Image quality check",
+  ],
+  AI: ["Data assistant", "Insight generation", "Prompt playground"],
+};
+
+const algorithms: Record<ServiceKey, string[]> = {
+  ML: ["Automatic (Python service)"],
+  DL: ["Dense neural network", "CNN", "RNN / LSTM", "Transformer"],
+  NLP: [
+    "Text classification pipeline",
+    "Sentiment pipeline",
+    "Named entity recognition",
+    "Transformer embeddings",
+  ],
+  "Computer Vision": [
+    "Transfer learning",
+    "CNN classifier",
+    "Object detection model",
+  ],
+  AI: ["DSSAAS AI Assistant", "Dataset copilot", "Custom prompt"],
+};
+
+function cx(...values: (string | false | null | undefined)[]) {
+  return values.filter(Boolean).join(" ");
+}
+
+function formatMetricName(name: string) {
+  return name
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayCell(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/**
+ * The API may return the dataset rows directly or wrap them in an object
+ * such as { datasets: [...] } / { data: [...] }. Normalize the response
+ * before storing it so array methods like find(), map(), and some() are safe.
+ */
+function normalizeDatasetOptions(payload: unknown): DatasetOption[] {
+  let value: unknown = payload;
+
+  for (let depth = 0; depth < 4 && !Array.isArray(value); depth += 1) {
+    if (!value || typeof value !== "object") return [];
+    const record = value as Record<string, unknown>;
+    value = record.datasets ?? record.data ?? record.items ?? record.rows;
+  }
+
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter(
+      (item): item is Record<string, unknown> =>
+        !!item && typeof item === "object",
+    )
+    .map((item) => ({
+      id: String(item.id ?? item.datasetId ?? item.dataset_id ?? ""),
+      name: String(
+        item.name ??
+          item.datasetName ??
+          item.dataset_name ??
+          item.original_filename ??
+          "Unnamed dataset",
+      ),
+      status: String(item.status ?? "unknown"),
+    }))
+    .filter((item) => item.id.length > 0);
+}
+
+/** Normalize common preview response wrappers and guarantee array fields for rendering. */
+function normalizeDatasetPreview(payload: unknown): DatasetPreview | null {
+  let value: unknown = payload;
+
+  // APIs commonly wrap the useful payload as { data }, { preview }, or { result }.
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return null;
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.columns) || Array.isArray(record.rows)) break;
+    const nested =
+      record.preview ?? record.data ?? record.result ?? record.dataset;
+    if (!nested || nested === value) break;
+    value = nested;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const rawRows = Array.isArray(record.rows) ? record.rows : [];
+  const rows: Record<string, unknown>[] = rawRows.map((row) => {
+    if (row && typeof row === "object" && !Array.isArray(row)) {
+      return row as Record<string, unknown>;
+    }
+    return {};
+  });
+
+  const rawColumns = Array.isArray(record.columns) ? record.columns : [];
+  const columns = rawColumns
+    .map((column) => {
+      if (typeof column === "string") return column;
+      if (column && typeof column === "object") {
+        const item = column as Record<string, unknown>;
+        const name = item.name ?? item.column ?? item.key;
+        return typeof name === "string" ? name : "";
+      }
+      return "";
+    })
+    .filter(Boolean);
+
+  // Some preview endpoints return row objects but omit the columns array.
+  const inferredColumns =
+    columns.length > 0 ? columns : Object.keys(rows[0] ?? {});
+  if (inferredColumns.length === 0 && rows.length === 0) return null;
+
+  return {
+    datasetId: String(record.datasetId ?? record.dataset_id ?? ""),
+    columns: inferredColumns,
+    rows: rows as DatasetPreview["rows"],
+    rowCount:
+      typeof record.rowCount === "number" ? record.rowCount : rows.length,
+    limit: typeof record.limit === "number" ? record.limit : rows.length,
+    hasMore: typeof record.hasMore === "boolean" ? record.hasMore : false,
+  };
+}
+
 export default function WorkspacePage({
   service,
   onBack,
@@ -86,7 +237,7 @@ export default function WorkspacePage({
   service: ServiceKey;
   onBack: () => void;
 }) {
-  const [task, setTask] = useState(
+  const [task, setTask] = useState<string>(
     service === "ML"
       ? "Classification"
       : service === "NLP"
@@ -97,70 +248,211 @@ export default function WorkspacePage({
             ? "Neural network"
             : "Data assistant",
   );
-  const [dataset, setDataset] = useState("Customer Churn");
-  const [algorithm, setAlgorithm] = useState(
-    service === "ML"
-      ? "Logistic Regression"
-      : service === "DL"
-        ? "Dense neural network"
-        : service === "NLP"
-          ? "Text classification pipeline"
-          : service === "Computer Vision"
-            ? "Transfer learning"
-            : "DSSAAS AI Assistant",
+  const [algorithm, setAlgorithm] = useState(algorithms[service][0]);
+  const [datasets, setDatasets] = useState<DatasetOption[]>([]);
+  const [datasetId, setDatasetId] = useState("");
+  const [preview, setPreview] = useState<DatasetPreview | null>(null);
+  const [target, setTarget] = useState("");
+  const [testSize, setTestSize] = useState(20);
+  const [loadingDatasets, setLoadingDatasets] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [trainingResult, setTrainingResult] =
+    useState<MLTrainingResponse | null>(null);
+  const [organizationId] = useState(
+    () => sessionStorage.getItem("organizationId") ?? "",
   );
-  const [target, setTarget] = useState("churn");
+  const [token] = useState(() => sessionStorage.getItem("accessToken") ?? "");
+
   const info = serviceInfo[service];
   const Icon = info.icon;
-  const tasks: Record<ServiceKey, string[]> = {
-    ML: ["Classification", "Regression", "Clustering"],
-    DL: ["Neural network", "Image model", "Sequence model"],
-    NLP: [
-      "Sentiment analysis",
-      "Text classification",
-      "Entity extraction",
-      "Text summarization",
-    ],
-    "Computer Vision": [
-      "Image classification",
-      "Object detection",
-      "Image quality check",
-    ],
-    AI: ["Data assistant", "Insight generation", "Prompt playground"],
-  };
-  const algorithms: Record<ServiceKey, string[]> = {
-    ML: [
-      "Logistic Regression",
-      "Random Forest",
-      "Decision Tree",
-      "XGBoost",
-      "K-Means",
-    ],
-    DL: ["Dense neural network", "CNN", "RNN / LSTM", "Transformer"],
-    NLP: [
-      "Text classification pipeline",
-      "Sentiment pipeline",
-      "Named entity recognition",
-      "Transformer embeddings",
-    ],
-    "Computer Vision": [
-      "Transfer learning",
-      "CNN classifier",
-      "Object detection model",
-    ],
-    AI: ["DSSAAS AI Assistant", "Dataset copilot", "Custom prompt"],
-  };
+  const selectedDataset = useMemo(
+    () => datasets.find((item) => item.id === datasetId),
+    [datasets, datasetId],
+  );
 
-  function cx(...values: (string | false | null | undefined)[]) {
-    return values.filter(Boolean).join(" ");
+  // Load organization datasets only for the ML workflow, which is connected to the API.
+  useEffect(() => {
+    if (service !== "ML") return;
+
+    if (!organizationId || !token) {
+      setError("Please sign in and select your organization to load datasets.");
+      return;
+    }
+
+    let cancelled = false;
+    async function loadDatasets() {
+      setLoadingDatasets(true);
+      setError("");
+      try {
+        const response: unknown = await getDatasets(organizationId, token);
+        if (cancelled) return;
+
+        const result = normalizeDatasetOptions(response);
+        setDatasets(result);
+        setDatasetId((current) =>
+          current && result.some((item) => item.id === current)
+            ? current
+            : (result[0]?.id ?? ""),
+        );
+
+        if (result.length === 0) {
+          setError(
+            "The API response did not contain any datasets. Check the dataset list endpoint response shape.",
+          );
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Unable to load datasets.",
+          );
+        }
+      } finally {
+        if (!cancelled) setLoadingDatasets(false);
+      }
+    }
+    void loadDatasets();
+    return () => {
+      cancelled = true;
+    };
+  }, [service, organizationId, token]);
+
+  // Load the real columns and sample rows whenever the selected dataset changes.
+  useEffect(() => {
+    if (service !== "ML" || !organizationId || !token || !datasetId) {
+      setPreview(null);
+      setTarget("");
+      return;
+    }
+
+    let cancelled = false;
+    async function loadPreview() {
+      setLoadingPreview(true);
+      setError("");
+      setNotice("");
+      setPreview(null);
+      setTarget("");
+      setTrainingResult(null);
+      try {
+        const response: unknown = await getDatasetPreview(
+          organizationId,
+          datasetId,
+          token,
+        );
+        if (cancelled) return;
+        const result = normalizeDatasetPreview(response);
+        if (!result) {
+          setPreview(null);
+          setTarget("");
+          setError(
+            "The dataset preview API returned an unexpected response. Expected columns and rows; check the preview endpoint response in DevTools → Network.",
+          );
+          return;
+        }
+        setPreview(result);
+        // The first column is only a default. The user should confirm the target column.
+        setTarget(result.columns[0] ?? "");
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Unable to load dataset columns.",
+          );
+        }
+      } finally {
+        if (!cancelled) setLoadingPreview(false);
+      }
+    }
+    void loadPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [service, organizationId, token, datasetId]);
+
+  // Reset service-specific selections if the parent switches service without unmounting this page.
+  useEffect(() => {
+    setTask(
+      service === "ML"
+        ? "Classification"
+        : service === "NLP"
+          ? "Sentiment analysis"
+          : service === "Computer Vision"
+            ? "Image classification"
+            : service === "DL"
+              ? "Neural network"
+              : "Data assistant",
+    );
+    setAlgorithm(algorithms[service][0]);
+  }, [service]);
+
+  async function handleTrainModel() {
+    if (!organizationId || !token) {
+      setError("Please sign in before training a model.");
+      return;
+    }
+    if (!datasetId || !target) {
+      setError("Select a dataset and target column before training.");
+      return;
+    }
+    if (task !== "Classification" && task !== "Regression") {
+      setError(
+        "Clustering is not supported by the current Python training endpoint. Choose Classification or Regression.",
+      );
+      return;
+    }
+    if (!preview?.columns.includes(target)) {
+      setError(
+        "The selected target column is not present in the dataset preview. Reload the dataset and try again.",
+      );
+      return;
+    }
+
+    setTraining(true);
+    setError("");
+    setNotice("");
+    setTrainingResult(null);
+    try {
+      const result = await trainDatasetModel(organizationId, datasetId, token, {
+        targetColumn: target,
+        task: task.toLowerCase() as "classification" | "regression",
+        testSize: testSize / 100,
+      });
+      setTrainingResult(result);
+      setNotice(
+        "Training completed successfully. Review the evaluation metrics below.",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Model training failed.");
+    } finally {
+      setTraining(false);
+    }
   }
+
+  function handlePrimaryAction() {
+    if (service === "ML") {
+      void handleTrainModel();
+      return;
+    }
+    setNotice(
+      `${info.subtitle} is currently a UI preview. Its execution endpoint has not been connected yet.`,
+    );
+    setError("");
+  }
+
+  const isMLTaskSupported = task === "Classification" || task === "Regression";
+  const previewColumns = preview?.columns ?? [];
+  const previewRows = preview?.rows ?? [];
 
   return (
     <>
       <div className="mb-6">
         <button
+          type="button"
           onClick={onBack}
-          className="mb-4 flex items-center gap-2 text-xs text-slate-500 hover:text-white">
+          className="mb-4 flex items-center gap-2 text-xs text-slate-500 transition hover:text-white">
           <ChevronLeft size={14} /> All services
         </button>
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
@@ -189,215 +481,464 @@ export default function WorkspacePage({
             </div>
           </div>
           <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-semibold text-emerald-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />{" "}
-            Workspace ready
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            {service === "ML" ? "API-connected workflow" : "Workspace preview"}
           </span>
         </div>
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="mb-5 flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+          <AlertCircle size={18} className="mt-0.5 shrink-0 text-rose-300" />
+          <div className="min-w-0 flex-1">{error}</div>
+        </div>
+      )}
+      {notice && (
+        <div
+          role="status"
+          className="mb-5 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          {notice}
+        </div>
+      )}
+
       <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]">
         <div className="space-y-5">
           <section className="panel p-5 sm:p-6">
-            <div className="mb-5 flex items-center justify-between">
+            <div className="mb-5 flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold text-white">Configure workflow</h2>
                 <p className="mt-1 text-xs text-slate-500">
                   Choose your data and customize the task
                 </p>
               </div>
-              <span className="text-[10px] text-slate-500">STEP 01 / 03</span>
+              <span className="whitespace-nowrap text-[10px] text-slate-500">
+                STEP 01 / 03
+              </span>
             </div>
-            <label className="form-label">Select dataset</label>
-            <select
-              className="form-select mb-5"
-              value={dataset}
-              onChange={(e) => setDataset(e.target.value)}>
-              <option>Customer Churn</option>
-              <option>Retail Sales Q3</option>
-              <option>Marketing Campaign</option>
-              <option>Product Reviews</option>
-            </select>
-            <div className="mb-5 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+
+            <label htmlFor="workspace-dataset" className="form-label">
+              Select dataset
+            </label>
+            {service === "ML" ? (
+              <select
+                id="workspace-dataset"
+                className="form-select mb-5"
+                value={datasetId}
+                disabled={loadingDatasets || datasets.length === 0}
+                onChange={(event) => setDatasetId(event.target.value)}>
+                {loadingDatasets && (
+                  <option value="">Loading datasets...</option>
+                )}
+                {!loadingDatasets && datasets.length === 0 && (
+                  <option value="">No datasets available</option>
+                )}
+                {datasets.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select
+                id="workspace-dataset"
+                className="form-select mb-5"
+                value=""
+                disabled>
+                <option value="">
+                  Dataset selection will be available when this service is
+                  connected
+                </option>
+              </select>
+            )}
+
+            <div className="mb-5 rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition-colors hover:border-slate-700">
               <div className="flex items-center gap-3">
                 <div className="file-icon tone-blue">
                   <FileSpreadsheet size={18} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-white">
-                    {dataset}
+                  <div className="truncate text-xs font-semibold text-white">
+                    {service === "ML"
+                      ? (selectedDataset?.name ??
+                        (loadingDatasets
+                          ? "Loading your datasets"
+                          : "No dataset selected"))
+                      : "Dataset connection pending"}
                   </div>
                   <div className="mt-1 text-[10px] text-slate-500">
-                    CSV dataset · uploaded sample
+                    {service === "ML"
+                      ? preview
+                        ? `${preview.rowCount} preview rows · ${preview.columns.length} columns detected`
+                        : loadingPreview
+                          ? "Reading dataset schema..."
+                          : "Select a dataset to inspect its schema"
+                      : "Connect this service to your organization datasets in a later integration step"}
                   </div>
                 </div>
-                <span className="status-pill status-ready">
-                  <span className="status-dot" /> Ready
+                <span
+                  className={cx(
+                    "status-pill",
+                    service === "ML" && preview
+                      ? "status-ready"
+                      : "border border-slate-700 text-slate-400",
+                  )}>
+                  <span className="status-dot" />
+                  {service === "ML"
+                    ? loadingPreview
+                      ? "Loading"
+                      : preview
+                        ? "Loaded"
+                        : "Waiting"
+                    : "Preview"}
                 </span>
               </div>
               <div className="mt-4 grid grid-cols-3 gap-3 border-t border-slate-800 pt-4">
                 <div>
                   <div className="text-lg font-bold text-white">
-                    {dataset === "Retail Sales Q3"
-                      ? "18.4K"
-                      : dataset === "Product Reviews"
-                        ? "12.6K"
-                        : dataset === "Marketing Campaign"
-                          ? "3.8K"
-                          : "7.0K"}
+                    {service === "ML"
+                      ? preview
+                        ? preview.rowCount
+                        : "—"
+                      : "—"}
                   </div>
-                  <div className="text-[10px] text-slate-500">Rows</div>
+                  <div className="text-[10px] text-slate-500">Preview rows</div>
                 </div>
                 <div>
                   <div className="text-lg font-bold text-white">
-                    {dataset === "Retail Sales Q3"
-                      ? 14
-                      : dataset === "Product Reviews"
-                        ? 8
-                        : dataset === "Marketing Campaign"
-                          ? 18
-                          : 21}
+                    {service === "ML"
+                      ? preview
+                        ? preview.columns.length
+                        : "—"
+                      : "—"}
                   </div>
                   <div className="text-[10px] text-slate-500">Columns</div>
                 </div>
                 <div>
-                  <div className="text-lg font-bold text-emerald-300">100%</div>
-                  <div className="text-[10px] text-slate-500">Loaded</div>
+                  <div className="text-lg font-bold text-emerald-300">
+                    {service === "ML" && preview ? "Ready" : "—"}
+                  </div>
+                  <div className="text-[10px] text-slate-500">
+                    Schema status
+                  </div>
                 </div>
               </div>
             </div>
+
             <label className="form-label">Choose task</label>
             <div className="mb-5 grid gap-2 sm:grid-cols-2">
-              {tasks[service].map((t) => (
+              {tasks[service].map((item) => (
                 <button
-                  key={t}
-                  onClick={() => setTask(t)}
+                  type="button"
+                  key={item}
+                  onClick={() => {
+                    setTask(item);
+                    setError("");
+                    setNotice("");
+                  }}
                   className={cx(
                     "choice-card",
-                    task === t && "choice-card-active",
+                    task === item && "choice-card-active",
                   )}>
                   <span
                     className={cx(
                       "choice-radio",
-                      task === t && "choice-radio-active",
+                      task === item && "choice-radio-active",
                     )}>
-                    {task === t && <Check size={10} />}
+                    {task === item && <Check size={10} />}
                   </span>
                   <span className="text-xs font-medium text-slate-200">
-                    {t}
+                    {item}
                   </span>
                 </button>
               ))}
             </div>
-            <label className="form-label">Algorithm / model</label>
+
+            <label htmlFor="workspace-algorithm" className="form-label">
+              Algorithm / model
+            </label>
             <select
+              id="workspace-algorithm"
               className="form-select mb-5"
               value={algorithm}
-              onChange={(e) => setAlgorithm(e.target.value)}>
-              {algorithms[service].map((a) => (
-                <option key={a}>{a}</option>
+              onChange={(event) => setAlgorithm(event.target.value)}
+              disabled={service === "ML"}>
+              {algorithms[service].map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
               ))}
             </select>
             {service === "ML" && (
+              <p className="-mt-3 mb-5 text-[10px] leading-5 text-slate-500">
+                The current Python endpoint selects its algorithm automatically.
+                The model returned by the service is shown in the evaluation
+                results.
+              </p>
+            )}
+
+            {service === "ML" && (
               <>
-                <label className="form-label">Target column</label>
+                <label htmlFor="workspace-target" className="form-label">
+                  Target column
+                </label>
                 <select
+                  id="workspace-target"
                   className="form-select mb-5"
                   value={target}
-                  onChange={(e) => setTarget(e.target.value)}>
-                  <option value="churn">churn</option>
-                  <option value="customer_segment">customer_segment</option>
-                  <option value="monthly_spend">monthly_spend</option>
+                  disabled={loadingPreview || !previewColumns.length}
+                  onChange={(event) => setTarget(event.target.value)}>
+                  {!previewColumns.length && (
+                    <option value="">
+                      {loadingPreview
+                        ? "Loading columns..."
+                        : "No columns available"}
+                    </option>
+                  )}
+                  {previewColumns.map((column) => (
+                    <option key={column} value={column}>
+                      {column}
+                    </option>
+                  ))}
                 </select>
-                <label className="form-label">
-                  Test split{" "}
-                  <span className="float-right text-indigo-300">20%</span>
-                </label>
+                <div className="mb-1 flex items-center justify-between gap-3">
+                  <label
+                    htmlFor="workspace-test-split"
+                    className="form-label !mb-0">
+                    Test split
+                  </label>
+                  <span className="text-xs font-semibold text-indigo-300">
+                    {testSize}%
+                  </span>
+                </div>
                 <input
+                  id="workspace-test-split"
                   type="range"
                   className="mb-2 w-full accent-indigo-400"
                   min="10"
                   max="40"
-                  defaultValue="20"
+                  step="5"
+                  value={testSize}
+                  onChange={(event) => setTestSize(Number(event.target.value))}
                 />
                 <div className="mb-5 flex justify-between text-[10px] text-slate-500">
-                  <span>10% test</span>
-                  <span>40% test</span>
+                  <span>10% test · more training data</span>
+                  <span>40% test · more evaluation data</span>
                 </div>
+                {!isMLTaskSupported && (
+                  <p className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200">
+                    Clustering is visible in the workspace, but this training
+                    endpoint currently supports Classification and Regression
+                    only.
+                  </p>
+                )}
               </>
             )}
+
             <div className="flex flex-col gap-2 border-t border-slate-800 pt-5 sm:flex-row">
               <button
+                type="button"
                 className="primary-button"
-                onClick={() =>
-                  window.alert(
-                    "UI preview only. Model execution will be connected later.",
-                  )
+                onClick={handlePrimaryAction}
+                disabled={
+                  service === "ML" &&
+                  (training ||
+                    loadingDatasets ||
+                    loadingPreview ||
+                    !datasetId ||
+                    !target ||
+                    !isMLTaskSupported)
                 }>
-                <Play size={15} />{" "}
-                {service === "AI" ? "Run assistant" : "Configure & continue"}{" "}
+                {training ? (
+                  <LoaderCircle size={15} className="animate-spin" />
+                ) : (
+                  <Play size={15} />
+                )}
+                {training
+                  ? "Training model..."
+                  : service === "ML"
+                    ? "Train model"
+                    : service === "AI"
+                      ? "Run assistant"
+                      : "Configure & continue"}
                 <ArrowRight size={14} />
               </button>
               <button
+                type="button"
                 className="secondary-button"
-                onClick={() =>
-                  window.alert("Demo UI: configuration saved locally only.")
-                }>
+                onClick={() => {
+                  setNotice(
+                    "Draft saving is not connected yet. Your current selections remain in this page until you leave it.",
+                  );
+                  setError("");
+                }}>
                 Save draft
               </button>
             </div>
-            <p className="mt-3 text-[10px] text-slate-500">
-              Preview only · no data is sent or model trained.
+            <p className="mt-3 text-[10px] leading-5 text-slate-500">
+              {service === "ML"
+                ? "Training sends the selected dataset rows to your Python ML service through the API. Use small datasets for this synchronous workflow."
+                : "Preview only · this service's execution endpoint is not connected yet."}
             </p>
           </section>
+
           <section className="panel p-5 sm:p-6">
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold text-white">Dataset preview</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Sample rows · demo values
+                  {service === "ML"
+                    ? "Real sample rows from the selected dataset"
+                    : "Sample preview becomes available when the dataset connection is added"}
                 </p>
               </div>
-              <button className="secondary-button !px-3 !py-2">
-                <Eye size={13} /> View all
-              </button>
+              <span className="inline-flex items-center gap-2 rounded-lg border border-slate-800 px-3 py-2 text-[10px] text-slate-400">
+                <Eye size={13} />{" "}
+                {loadingPreview
+                  ? "Loading"
+                  : preview
+                    ? `${preview.rowCount} rows`
+                    : "No preview"}
+              </span>
             </div>
-            <div className="overflow-x-auto">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>customer_id</th>
-                    <th>tenure</th>
-                    <th>monthly_spend</th>
-                    <th>churn</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    ["C-1001", "12", "$84.20", "No"],
-                    ["C-1002", "3", "$49.00", "Yes"],
-                    ["C-1003", "28", "$120.50", "No"],
-                    ["C-1004", "8", "$65.40", "Yes"],
-                  ].map((r, i) => (
-                    <tr key={i}>
-                      {r.map((v, j) => (
-                        <td
-                          key={j}
-                          className={
-                            j === 3
-                              ? v === "Yes"
-                                ? "text-rose-300"
-                                : "text-emerald-300"
-                              : ""
-                          }>
-                          {v}
-                        </td>
+            {service === "ML" && preview ? (
+              <div className="overflow-x-auto rounded-xl border border-slate-800">
+                <table className="data-table min-w-full">
+                  <thead>
+                    <tr>
+                      {previewColumns.map((column) => (
+                        <th key={column}>{column}</th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {previewRows.map((row, rowIndex) => (
+                      <tr key={`${datasetId}-${rowIndex}`}>
+                        {previewColumns.map((column) => (
+                          <td key={column} className="max-w-56 truncate">
+                            {displayCell(row[column])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800 px-5 py-10 text-center">
+                {loadingPreview ? (
+                  <LoaderCircle
+                    size={22}
+                    className="mb-3 animate-spin text-indigo-300"
+                  />
+                ) : (
+                  <Database size={22} className="mb-3 text-slate-600" />
+                )}
+                <p className="text-xs font-medium text-slate-300">
+                  {loadingPreview
+                    ? "Loading dataset preview"
+                    : "Your data preview will appear here"}
+                </p>
+                <p className="mt-1 max-w-sm text-[10px] leading-5 text-slate-500">
+                  {service === "ML"
+                    ? "Choose a dataset above. Column names and sample values will be loaded from your API."
+                    : "Connect this service to a dataset to preview real records."}
+                </p>
+              </div>
+            )}
           </section>
+
+          {trainingResult && (
+            <section className="panel p-5 sm:p-6">
+              <div className="mb-4 flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
+                <div>
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[10px] font-semibold text-emerald-300">
+                    <Check size={12} /> Training completed
+                  </div>
+                  <h2 className="font-semibold text-white">
+                    Model evaluation results
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {trainingResult.result.algorithm} ·{" "}
+                    {trainingResult.result.task} · Target:{" "}
+                    {trainingResult.result.target_column}
+                  </p>
+                </div>
+                <span className="text-[10px] text-slate-500">
+                  Dataset ID: {trainingResult.datasetId}
+                </span>
+              </div>
+              {Object.keys(trainingResult.result.metrics ?? {}).length > 0 ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {Object.entries(trainingResult.result.metrics).map(
+                    ([name, value]) => (
+                      <div
+                        key={name}
+                        className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                        <p className="text-xs capitalize text-slate-400">
+                          {formatMetricName(name)}
+                        </p>
+                        <p className="mt-2 break-all text-2xl font-bold text-emerald-300">
+                          {typeof value === "number" && Number.isFinite(value)
+                            ? value.toFixed(4)
+                            : displayCell(value)}
+                        </p>
+                      </div>
+                    ),
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400">
+                  The training service did not return evaluation metrics.
+                </p>
+              )}
+              <div className="mt-5 grid grid-cols-3 gap-3 border-t border-slate-800 pt-4 text-center">
+                <div>
+                  <p className="text-lg font-semibold text-white">
+                    {trainingResult.result.total_rows ?? "—"}
+                  </p>
+                  <p className="text-[10px] text-slate-500">Total rows</p>
+                </div>
+                <div>
+                  <p className="text-lg font-semibold text-white">
+                    {trainingResult.result.training_rows ?? "—"}
+                  </p>
+                  <p className="text-[10px] text-slate-500">Training rows</p>
+                </div>
+                <div>
+                  <p className="text-lg font-semibold text-white">
+                    {trainingResult.result.testing_rows ?? "—"}
+                  </p>
+                  <p className="text-[10px] text-slate-500">Testing rows</p>
+                </div>
+              </div>
+              {trainingResult.result.sample_predictions?.length ? (
+                <div className="mt-5 overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="data-table min-w-full">
+                    <thead>
+                      <tr>
+                        <th>Actual</th>
+                        <th>Predicted</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trainingResult.result.sample_predictions.map(
+                        (prediction, index) => (
+                          <tr key={index}>
+                            <td>{displayCell(prediction.actual)}</td>
+                            <td>{displayCell(prediction.predicted)}</td>
+                          </tr>
+                        ),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </section>
+          )}
         </div>
+
         <div className="space-y-5">
           <section className="panel p-5">
             <div className="mb-4 flex items-center gap-2">
@@ -408,21 +949,38 @@ export default function WorkspacePage({
             </div>
             <div className="space-y-4">
               {[
-                { l: "Service", v: service },
-                { l: "Dataset", v: dataset },
-                { l: "Task", v: task },
-                { l: "Model", v: algorithm },
+                { label: "Service", value: service },
                 {
-                  l: "Target",
-                  v: service === "ML" ? target : "Not applicable",
+                  label: "Dataset",
+                  value:
+                    service === "ML"
+                      ? (selectedDataset?.name ?? "Not selected")
+                      : "Not connected",
                 },
-              ].map((x) => (
+                { label: "Task", value: task },
+                {
+                  label: "Model",
+                  value:
+                    service === "ML" ? "Selected by Python service" : algorithm,
+                },
+                {
+                  label: "Target",
+                  value:
+                    service === "ML"
+                      ? target || "Not selected"
+                      : "Not applicable",
+                },
+                {
+                  label: "Test split",
+                  value: service === "ML" ? `${testSize}%` : "Not applicable",
+                },
+              ].map((item) => (
                 <div
-                  key={x.l}
+                  key={item.label}
                   className="flex items-start justify-between gap-3">
-                  <span className="text-xs text-slate-500">{x.l}</span>
-                  <span className="max-w-[60%] text-right text-xs font-medium text-slate-200">
-                    {x.v}
+                  <span className="text-xs text-slate-500">{item.label}</span>
+                  <span className="max-w-[65%] break-words text-right text-xs font-medium text-slate-200">
+                    {item.value}
                   </span>
                 </div>
               ))}
@@ -434,41 +992,77 @@ export default function WorkspacePage({
                   className="mt-0.5 shrink-0 text-indigo-300"
                 />
                 <p className="text-[11px] leading-5 text-slate-300">
-                  Your configuration is ready for review. Connect the training
-                  service later to run this workflow.
+                  {service === "ML"
+                    ? "Your training configuration is sent to the API. The backend must verify organization access and dataset ownership before reading the file."
+                    : "Your configuration is ready for review. Connect the service execution endpoint to run this workflow."}
                 </p>
               </div>
             </div>
           </section>
+
           <section className="panel p-5">
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="font-semibold text-white">Pipeline progress</h2>
-              <span className="text-[10px] text-slate-500">0 / 3</span>
+              <span className="text-[10px] text-slate-500">
+                {trainingResult ? "3 / 3" : training ? "2 / 3" : "0 / 3"}
+              </span>
             </div>
-            {["Data validation", "Feature preparation", "Model execution"].map(
-              (x, i) => (
-                <div key={x} className="flex gap-3 pb-4 last:pb-0">
+            {[
+              {
+                label: "Data validation",
+                description: trainingResult
+                  ? "Completed"
+                  : "Checks run by the API",
+              },
+              {
+                label: "Feature preparation",
+                description: trainingResult
+                  ? "Completed"
+                  : "Handled by the Python pipeline",
+              },
+              {
+                label: "Model execution",
+                description: trainingResult
+                  ? "Evaluation results returned"
+                  : training
+                    ? "Training in progress"
+                    : "Waiting to start",
+              },
+            ].map((item, index) => {
+              const completed = Boolean(trainingResult);
+              const current = training && index === 2;
+              return (
+                <div key={item.label} className="flex gap-3 pb-4 last:pb-0">
                   <div
                     className={cx(
                       "pipeline-step",
-                      i === 0 ? "pipeline-current" : "",
+                      completed
+                        ? "pipeline-current"
+                        : current
+                          ? "pipeline-current"
+                          : "",
                     )}>
-                    {i + 1}
+                    {completed ? (
+                      <Check size={12} />
+                    ) : current ? (
+                      <LoaderCircle size={12} className="animate-spin" />
+                    ) : (
+                      index + 1
+                    )}
                   </div>
                   <div>
                     <div className="text-xs font-medium text-slate-200">
-                      {x}
+                      {item.label}
                     </div>
-                    <div className="mt-1 text-[10px] text-slate-500">
-                      {i === 0
-                        ? "Ready to validate"
-                        : "Waiting for previous step"}
+                    <div className="mt-1 text-[10px] leading-5 text-slate-500">
+                      {item.description}
                     </div>
                   </div>
                 </div>
-              ),
-            )}
+              );
+            })}
           </section>
+
           <section className="panel p-5">
             <div className="flex items-center gap-2">
               <ShieldCheck size={17} className="text-emerald-300" />
@@ -477,9 +1071,10 @@ export default function WorkspacePage({
               </h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-slate-500">
-              Workspace data is shown here as sample content. Organization
-              permissions and API security will be connected in a later
-              integration step.
+              The UI sends requests through your authenticated API. Ensure the
+              API checks the user's organization membership and dataset
+              ownership, limits CSV size and row count, and never trusts a file
+              path supplied by the browser.
             </p>
           </section>
         </div>
