@@ -1,7 +1,10 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.ts";
-import { predictPythonModel } from "../services/ML.Service.ts";
+import {
+  predictPythonModel,
+  getPythonModelSchema,
+} from "../services/ML.Service.ts";
 import {
   getModelForOrganization,
   listModelsForOrganization,
@@ -170,6 +173,85 @@ export async function predictOrganizationModelHandler(
     res.status(502).json({
       success: false,
       message,
+    });
+  }
+}
+
+export async function getOrganizationModelSchemaHandler(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const identity = getIdentity(req, res);
+  if (!identity) return;
+
+  const modelId = req.params.modelId;
+
+  if (typeof modelId !== "string" || !uuidSchema.safeParse(modelId).success) {
+    res.status(400).json({
+      success: false,
+      message: "Invalid model ID.",
+    });
+    return;
+  }
+
+  try {
+    // 1. Find the model inside the user's organization.
+    const model = await getModelForOrganization(
+      identity.organizationId,
+      modelId,
+    );
+
+    if (!model) {
+      res.status(404).json({
+        success: false,
+        message: "Model not found.",
+      });
+      return;
+    }
+
+    // 2. Get the Python artifact UUID from PostgreSQL.
+    const pythonModelId = model.artifact_key;
+
+    if (
+      typeof pythonModelId !== "string" ||
+      !uuidSchema.safeParse(pythonModelId).success
+    ) {
+      res.status(404).json({
+        success: false,
+        message: "This model does not have a valid saved artifact.",
+      });
+      return;
+    }
+
+    // 3. Ask Python FastAPI for the saved feature schema.
+    const schema = await getPythonModelSchema(pythonModelId);
+
+    // 4. Return schema to React.
+    res.status(200).json({
+      success: true,
+      modelId: model.id,
+      modelName: model.name,
+      schema,
+    });
+  } catch (error) {
+    console.error("Get model schema failed:", error);
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unable to retrieve model schema.";
+
+    if (message.toLowerCase().includes("not found")) {
+      res.status(404).json({
+        success: false,
+        message,
+      });
+      return;
+    }
+
+    res.status(502).json({
+      success: false,
+      message: "Unable to retrieve schema from Python ML service.",
     });
   }
 }

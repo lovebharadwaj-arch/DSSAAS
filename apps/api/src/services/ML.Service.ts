@@ -55,3 +55,41 @@ export function trainPythonModel(input: TrainModelInput) {
 export function predictPythonModel(input: PredictModelInput) {
   return callMLService("/models/predict", input);
 }
+
+async function getMLService(endpoint: string) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    Number(process.env.ML_SERVICE_TIMEOUT_MS ?? 120000),
+  );
+
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}${endpoint}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+
+    const result = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const message =
+        typeof result?.detail === "string"
+          ? result.detail
+          : "Python ML service failed.";
+
+      throw new Error(message);
+    }
+
+    return result;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function getPythonModelSchema(modelId: string) {
+  return getMLService(`/models/${encodeURIComponent(modelId)}/schema`);
+}

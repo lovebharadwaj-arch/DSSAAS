@@ -4,13 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { pool } from "../config/postragesql.ts";
+import type { AuthenticatedRequest } from "../middleware/auth.middleware.ts";
 import { trainPythonModel } from "../services/ML.Service.ts";
 import {
   createModelRecord,
   createTrainingJob,
   updateTrainingJobStatus,
 } from "../services/mlJob.service.ts";
-import type { AuthenticatedRequest } from "../middleware/auth.middleware.ts";
 
 type TrainingTask = "classification" | "regression";
 
@@ -263,12 +263,15 @@ export async function trainDatasetModelHandler(
             dataset_id: dataset.id,
             target_column: targetColumn,
             task,
-            algorithm,
+            algorithm: result.algorithm ?? algorithm,
             test_size: testSize,
             python_model_id: result.model_id,
             model_record_id: model.id,
-            metrics: result.metrics,
-            sample_predictions: result.sample_predictions,
+            metrics: result.metrics ?? {},
+            total_rows: result.total_rows,
+            training_rows: result.training_rows,
+            testing_rows: result.testing_rows,
+            sample_predictions: result.sample_predictions ?? [],
           },
           startedAt,
           finishedAt: new Date(),

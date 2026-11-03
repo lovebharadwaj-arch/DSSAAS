@@ -415,12 +415,31 @@ export default function WorkspacePage({
     setNotice("");
     setTrainingResult(null);
     try {
-      const result = await trainDatasetModel(organizationId, datasetId, token, {
-        targetColumn: target,
-        task: task.toLowerCase() as "classification" | "regression",
-        testSize: testSize / 100,
-      });
-      setTrainingResult(result);
+      const result: unknown = await trainDatasetModel(
+        organizationId,
+        datasetId,
+        token,
+        {
+          targetColumn: target,
+          task: task.toLowerCase() as "classification" | "regression",
+          testSize: testSize / 100,
+        },
+      );
+
+      console.log("ML Training API Response:", result);
+
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("result" in result) ||
+        !result.result ||
+        typeof result.result !== "object"
+      ) {
+        throw new Error(
+          "Training completed, but the API returned an unexpected response structure. Check the training API response.",
+        );
+      }
+      setTrainingResult(result as MLTrainingResponse);
       setNotice(
         "Training completed successfully. Review the evaluation metrics below.",
       );
@@ -849,7 +868,7 @@ export default function WorkspacePage({
             )}
           </section>
 
-          {trainingResult && (
+          {trainingResult?.result && (
             <section className="panel p-5 sm:p-6">
               <div className="mb-4 flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
                 <div>

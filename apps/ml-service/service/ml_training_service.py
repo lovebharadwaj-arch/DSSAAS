@@ -1,3 +1,7 @@
+
+"""ML training, model persistence, prediction and feature schemas."""
+
+import json
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,17 +22,21 @@ ARTIFACT_DIR = BASE_DIR / "artifacts"
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def get_model_path(model_id: str) -> Path:
-    """
-    Resolve a model ID to its artifact file.
-    Only UUID-based filenames are accepted.
-    """
+def validate_model_id(model_id: str) -> str:
     try:
-        validated_id = str(UUID(model_id))
+        return str(UUID(model_id))
     except (ValueError, TypeError, AttributeError):
         raise ValueError("Invalid model ID.")
 
+
+def get_model_path(model_id: str) -> Path:
+    validated_id = validate_model_id(model_id)
     return ARTIFACT_DIR / f"{validated_id}.joblib"
+
+
+def get_schema_path(model_id: str) -> Path:
+    validated_id = validate_model_id(model_id)
+    return ARTIFACT_DIR / f"{validated_id}.schema.json"
 
 
 # --------------------------------------------------
@@ -43,7 +51,9 @@ def train_model(
     test_size: float = 0.2,
 ) -> dict[str, Any]:
 
-    # Train using the existing ML training engine.
+    if not rows:
+        raise ValueError("Dataset cannot be empty.")
+
     result = train_supervised(
         data=pd.DataFrame(rows),
         target_column=target_column,
@@ -52,16 +62,28 @@ def train_model(
         test_size=test_size,
     )
 
-    # Generate a unique model ID.
     model_id = str(uuid4())
 
-    # Save the fitted pipeline.
-    artifact_path = get_model_path(model_id)
+    # Save fitted ML pipeline.
+    joblib.dump(result["model"], get_model_path(model_id))
 
-    joblib.dump(result["model"], artifact_path)
+    # Prepare feature schema.
+    schema = {
+        "model_id": model_id,
+        "task": result["task"],
+        "algorithm": result["algorithm"],
+        "target_column": result["target_column"],
+        "features": result["feature_schema"],
+    }
 
-    # Return only JSON-serializable information.
+    # Save schema JSON.
+    with get_schema_path(model_id).open(
+        "w", encoding="utf-8"
+    ) as file:
+        json.dump(schema, file, indent=2, ensure_ascii=False)
+
     return {
+        "success": True,
         "model_id": model_id,
         "task": result["task"],
         "algorithm": result["algorithm"],
@@ -71,7 +93,29 @@ def train_model(
         "testing_rows": result["testing_rows"],
         "metrics": result["metrics"],
         "sample_predictions": result["sample_predictions"],
+        "artifact_status": "saved",
     }
+
+
+# --------------------------------------------------
+# Get Model Feature Schema
+# --------------------------------------------------
+
+def get_model_schema(model_id: str) -> dict[str, Any]:
+
+    artifact_path = get_model_path(model_id)
+    schema_path = get_schema_path(model_id)
+
+    if not artifact_path.is_file():
+        raise FileNotFoundError("Trained model not found.")
+
+    if not schema_path.is_file():
+        raise FileNotFoundError(
+            "Feature schema not found. Retrain this model to generate its schema."
+        )
+
+    with schema_path.open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 
 # --------------------------------------------------
@@ -83,20 +127,24 @@ def predict_model(
     input_data: dict[str, Any],
 ) -> dict[str, Any]:
 
+    if not input_data:
+        raise ValueError("Input data cannot be empty.")
+
     artifact_path = get_model_path(model_id)
 
     if not artifact_path.is_file():
-        raise FileNotFoundError("Trained model was not found.")
+        raise FileNotFoundError("Trained model not found.")
 
     model = joblib.load(artifact_path)
 
     input_frame = pd.DataFrame([input_data])
+    prediction = model.predict(input_frame)[0]
 
-    prediction = model.predict(input_frame)
+    if hasattr(prediction, "item"):
+        prediction = prediction.item()
 
     return {
-        "model_id": str(UUID(model_id)),
-        "prediction": prediction[0].item()
-        if hasattr(prediction[0], "item")
-        else prediction[0],
+        "success": True,
+        "model_id": validate_model_id(model_id),
+        "prediction": prediction,
     }

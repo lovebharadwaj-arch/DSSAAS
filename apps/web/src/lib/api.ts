@@ -16,7 +16,6 @@ export async function apiRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  // Normalize the URL so the slash between /api and the endpoint is correct.
   const baseUrl = API_BASE_URL.replace(/\/+$/, "");
   const normalizedEndpoint = endpoint.replace(/^\/+/, "");
   const url = `${baseUrl}/${normalizedEndpoint}`;
@@ -26,16 +25,12 @@ export async function apiRequest<T>(
     headers,
   });
 
-  // Handle responses with no content, such as HTTP 204.
   if (response.status === 204) {
-    if (!response.ok) {
-      throw new Error("Request failed");
-    }
-
     return undefined as T;
   }
 
   const contentType = response.headers.get("content-type");
+
   const result = contentType?.includes("application/json")
     ? await response.json()
     : await response.text();

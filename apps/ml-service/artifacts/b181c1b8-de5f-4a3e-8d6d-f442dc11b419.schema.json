@@ -1,0 +1,33 @@
+{
+  "model_id": "b181c1b8-de5f-4a3e-8d6d-f442dc11b419",
+  "task": "regression",
+  "algorithm": "random_forest",
+  "target_column": "sepal.length",
+  "features": [
+    {
+      "name": "sepal.width",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "petal.length",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "petal.width",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "variety",
+      "type": "category",
+      "nullable": false,
+      "options": [
+        "Setosa",
+        "Versicolor",
+        "Virginica"
+      ]
+    }
+  ]
+}

@@ -172,6 +172,8 @@ export default function DatasetsPage() {
         subtitle="Upload, organize, and inspect the data that powers your intelligence workflows."
         action="Upload dataset"
         onAction={() => setShowUpload(true)}
+        secondaryAction="Upload CSV"
+        onSecondaryAction={() => setShowUpload(true)}
       />
 
       {datasetsError && (

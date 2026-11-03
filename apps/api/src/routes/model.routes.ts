@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  getOrganizationModelSchemaHandler,
   listOrganizationJobsHandler,
   listOrganizationModelsHandler,
   predictOrganizationModelHandler,
@@ -15,5 +16,6 @@ router.use(requireOrganizationMembership);
 router.get("/jobs", listOrganizationJobsHandler);
 router.get("/", listOrganizationModelsHandler);
 router.post("/:modelId/predict", predictOrganizationModelHandler);
+router.get("/:modelId/schema", getOrganizationModelSchemaHandler);
 
 export default router;
