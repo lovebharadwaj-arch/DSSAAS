@@ -30,7 +30,7 @@ interface TopbarProps {
   page: string;
   search: string;
   setSearch: (value: string) => void;
-  setPage: (page: PageKey) => void;
+  setPage: React.Dispatch<React.SetStateAction<any>>;
 }
 
 export default function Topbar({

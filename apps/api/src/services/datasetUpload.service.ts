@@ -19,7 +19,6 @@ interface CreateDatasetInput {
 export async function createDataset(input: CreateDatasetInput) {
   const client = await pool.connect();
 
-  // Store a relative key, not the server's absolute filesystem path.
   const storageKey = `local/datasets/${path.basename(input.filePath)}`;
 
   try {
@@ -37,7 +36,7 @@ export async function createDataset(input: CreateDatasetInput) {
          storage_key,
          status
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'uploaded')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ready')
        RETURNING
          id,
          organization_id,

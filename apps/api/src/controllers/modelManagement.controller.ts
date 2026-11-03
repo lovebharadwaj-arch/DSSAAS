@@ -6,7 +6,6 @@ import {
   getModelForOrganization,
   listModelsForOrganization,
   listTrainingJobs,
-  resolveModelArtifactPath,
 } from "../services/mlJob.service.ts";
 
 const uuidSchema = z.string().uuid();
@@ -130,17 +129,21 @@ export async function predictOrganizationModelHandler(
       return;
     }
 
-    const modelPath = resolveModelArtifactPath(model.artifact_key);
-    if (!modelPath) {
+    const pythonModelId = model.artifact_key;
+
+    if (
+      typeof pythonModelId !== "string" ||
+      !uuidSchema.safeParse(pythonModelId).success
+    ) {
       res.status(404).json({
         success: false,
-        message: "This model does not have a saved artifact.",
+        message: "This model does not have a valid saved artifact.",
       });
       return;
     }
 
     const prediction = await predictPythonModel({
-      model_path: modelPath,
+      model_id: pythonModelId,
       input_data: input,
     });
 

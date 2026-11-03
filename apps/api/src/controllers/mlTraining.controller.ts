@@ -8,14 +8,22 @@ import { trainPythonModel } from "../services/ML.Service.ts";
 import {
   createModelRecord,
   createTrainingJob,
-  ensureModelArtifactDirectory,
   updateTrainingJobStatus,
 } from "../services/mlJob.service.ts";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.ts";
 
 type TrainingTask = "classification" | "regression";
 
-async function loadDatasetRows(filePath: string): Promise<Record<string, string | null>[]> {
+interface TrainingRequestBody {
+  targetColumn?: string;
+  task?: TrainingTask;
+  algorithm?: string;
+  testSize?: number;
+}
+
+async function loadDatasetRows(
+  filePath: string,
+): Promise<Record<string, string | null>[]> {
   const parser = fs.createReadStream(filePath).pipe(
     parse({
       bom: true,
@@ -39,42 +47,67 @@ async function loadDatasetRows(filePath: string): Promise<Record<string, string 
   return rows;
 }
 
-export async function trainDatasetModelHandler(req: Request, res: Response) {
+export async function trainDatasetModelHandler(
+  req: Request,
+  res: Response,
+): Promise<void> {
   try {
     const organizationId = Array.isArray(req.params.organizationId)
       ? req.params.organizationId[0]
       : req.params.organizationId;
+
     const datasetId = Array.isArray(req.params.datasetId)
       ? req.params.datasetId[0]
       : req.params.datasetId;
+
     const userId = (req as AuthenticatedRequest).user?.id;
 
     const {
       targetColumn,
       task,
+      algorithm = "random_forest",
       testSize = 0.2,
-    }: {
-      targetColumn?: string;
-      task?: TrainingTask;
-      testSize?: number;
-    } = req.body ?? {};
+    }: TrainingRequestBody = req.body ?? {};
+
+    // -----------------------------------------
+    // 1. Validate request
+    // -----------------------------------------
 
     if (!organizationId || !datasetId || !userId) {
-      return res.status(400).json({
-        message: "Organization ID, dataset ID, and authenticated user are required.",
+      res.status(400).json({
+        success: false,
+        message:
+          "Organization ID, dataset ID, and authenticated user are required.",
       });
+      return;
     }
 
-    if (!targetColumn?.trim()) {
-      return res.status(400).json({
+    if (typeof targetColumn !== "string" || !targetColumn.trim()) {
+      res.status(400).json({
+        success: false,
         message: "Target column is required.",
       });
+      return;
     }
 
     if (task !== "classification" && task !== "regression") {
-      return res.status(400).json({
+      res.status(400).json({
+        success: false,
         message: "Task must be classification or regression.",
       });
+      return;
+    }
+
+    if (
+      typeof algorithm !== "string" ||
+      !algorithm.trim() ||
+      algorithm.length > 100
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "A valid algorithm is required.",
+      });
+      return;
     }
 
     if (
@@ -83,10 +116,16 @@ export async function trainDatasetModelHandler(req: Request, res: Response) {
       testSize < 0.1 ||
       testSize > 0.4
     ) {
-      return res.status(400).json({
+      res.status(400).json({
+        success: false,
         message: "Test size must be between 0.1 and 0.4.",
       });
+      return;
     }
+
+    // -----------------------------------------
+    // 2. Verify dataset belongs to organization
+    // -----------------------------------------
 
     const datasetResult = await pool.query<{
       id: string;
@@ -106,35 +145,64 @@ export async function trainDatasetModelHandler(req: Request, res: Response) {
     const dataset = datasetResult.rows[0];
 
     if (!dataset) {
-      return res.status(404).json({
+      res.status(404).json({
+        success: false,
         message: "Dataset not found.",
       });
+      return;
     }
 
-    const filePath = path.resolve(process.cwd(), "uploads", "datasets", path.basename(dataset.storage_key));
+    if (dataset.status !== "ready") {
+      res.status(409).json({
+        success: false,
+        message: "Dataset must be ready before model training.",
+      });
+      return;
+    }
+
+    // -----------------------------------------
+    // 3. Locate and read CSV
+    // -----------------------------------------
+
+    const filePath = path.resolve(
+      process.cwd(),
+      "uploads",
+      "datasets",
+      path.basename(dataset.storage_key),
+    );
 
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
+      res.status(404).json({
+        success: false,
         message: "The dataset file could not be found.",
       });
+      return;
     }
 
     const rows = await loadDatasetRows(filePath);
 
     if (rows.length < 10) {
-      return res.status(400).json({
+      res.status(400).json({
+        success: false,
         message: "At least 10 CSV data rows are required.",
       });
+      return;
     }
 
-    const columns = Object.keys(rows[0]);
+    const columns = Object.keys(rows[0] ?? {});
 
     if (!columns.includes(targetColumn)) {
-      return res.status(400).json({
+      res.status(400).json({
+        success: false,
         message: "Target column does not exist in the CSV.",
         availableColumns: columns,
       });
+      return;
     }
+
+    // -----------------------------------------
+    // 4. Create PostgreSQL training job
+    // -----------------------------------------
 
     const job = await createTrainingJob({
       organizationId,
@@ -143,11 +211,12 @@ export async function trainDatasetModelHandler(req: Request, res: Response) {
       task,
       targetColumn,
       testSize,
-      algorithm: "random_forest",
+      algorithm,
     });
 
-    const artifactDirectory = await ensureModelArtifactDirectory();
-    const artifactPath = path.join(artifactDirectory, `${job.id}.joblib`);
+    // -----------------------------------------
+    // 5. Run Python ML training in background
+    // -----------------------------------------
 
     const runJob = async (): Promise<void> => {
       const startedAt = new Date();
@@ -158,70 +227,80 @@ export async function trainDatasetModelHandler(req: Request, res: Response) {
             dataset_id: dataset.id,
             target_column: targetColumn,
             task,
+            algorithm,
             test_size: testSize,
           },
           startedAt,
         });
 
+        // Python owns model training and artifact storage.
         const result = await trainPythonModel({
           rows,
           target_column: targetColumn,
           task,
+          algorithm,
           test_size: testSize,
-          artifact_path: artifactPath,
         });
 
-        await updateTrainingJobStatus(
-          organizationId,
-          job.id,
-          "completed",
-          {
-            resultSummary: {
-              dataset_id: dataset.id,
-              target_column: targetColumn,
-              task,
-              test_size: testSize,
-              model: result,
-            },
-            startedAt,
-            finishedAt: new Date(),
-          },
-        );
+        if (!result || typeof result.model_id !== "string") {
+          throw new Error("Python ML service did not return a valid model ID.");
+        }
 
-        await createModelRecord({
+        // Save Python model ID in PostgreSQL.
+        const model = await createModelRecord({
           organizationId,
           analysisJobId: job.id,
           name: `${dataset.name} ${task} model`,
-          algorithm: result.algorithm ?? "random_forest",
+          algorithm: result.algorithm ?? algorithm,
           taskType: task,
           metrics: (result.metrics ?? {}) as Record<string, number>,
-          artifactKey: `models/${path.basename(artifactPath)}`,
+          artifactKey: result.model_id,
+        });
+
+        // Mark training job completed.
+        await updateTrainingJobStatus(organizationId, job.id, "completed", {
+          resultSummary: {
+            dataset_id: dataset.id,
+            target_column: targetColumn,
+            task,
+            algorithm,
+            test_size: testSize,
+            python_model_id: result.model_id,
+            model_record_id: model.id,
+            metrics: result.metrics,
+            sample_predictions: result.sample_predictions,
+          },
+          startedAt,
+          finishedAt: new Date(),
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Model training failed.";
+        const message =
+          error instanceof Error ? error.message : "Model training failed.";
 
-        await updateTrainingJobStatus(
-          organizationId,
-          job.id,
-          "failed",
-          {
-            resultSummary: {
-              dataset_id: dataset.id,
-              target_column: targetColumn,
-              task,
-              test_size: testSize,
-            },
-            errorMessage: message,
-            startedAt,
-            finishedAt: new Date(),
+        console.error("Background ML training failed:", error);
+
+        await updateTrainingJobStatus(organizationId, job.id, "failed", {
+          resultSummary: {
+            dataset_id: dataset.id,
+            target_column: targetColumn,
+            task,
+            algorithm,
+            test_size: testSize,
           },
-        );
+          errorMessage: message,
+          startedAt,
+          finishedAt: new Date(),
+        });
       }
     };
 
     void runJob();
 
-    return res.status(202).json({
+    // -----------------------------------------
+    // 6. Return accepted training job
+    // -----------------------------------------
+
+    res.status(202).json({
       success: true,
       message: "Training job started.",
       job: {
@@ -229,6 +308,10 @@ export async function trainDatasetModelHandler(req: Request, res: Response) {
         status: job.status,
         organizationId,
         datasetId: dataset.id,
+        targetColumn,
+        task,
+        algorithm,
+        testSize,
         createdAt: job.created_at,
       },
     });
@@ -238,13 +321,16 @@ export async function trainDatasetModelHandler(req: Request, res: Response) {
     const message = error instanceof Error ? error.message : "";
 
     if (message.includes("aborted")) {
-      return res.status(504).json({
+      res.status(504).json({
+        success: false,
         message: "Python ML service timed out.",
       });
+      return;
     }
 
-    return res.status(502).json({
-      message: "Unable to train the model.",
+    res.status(500).json({
+      success: false,
+      message: "Unable to start model training.",
     });
   }
 }

@@ -8,11 +8,16 @@ import {
   LoaderCircle,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import PageHeader from "../../component/dashboard/PageHeader";
 import StatCard from "../../component/dashboard/StatCard";
 import { checkCsvFile, type CsvCheckResult } from "../../service/checkCSV";
+import {
+  listDatasets,
+  uploadDataset,
+  type DatasetRecord,
+} from "../../service/datasetService";
 import DatasetTable from "./DatasetTable";
 import Modal from "./Modal";
 
@@ -22,6 +27,75 @@ export default function DatasetsPage() {
   const [result, setResult] = useState<CsvCheckResult | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [datasets, setDatasets] = useState<DatasetRecord[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  const [datasetsError, setDatasetsError] = useState("");
+
+  const organizationId = sessionStorage.getItem("organizationId") ?? "";
+  const token =
+    localStorage.getItem("auth_token") ??
+    sessionStorage.getItem("accessToken") ??
+    "";
+
+  const datasetStats = useMemo(() => {
+    const totalRows = datasets.reduce(
+      (total, dataset) => total + Number(dataset.row_count ?? 0),
+      0,
+    );
+    const totalColumns = datasets.reduce(
+      (total, dataset) => total + Number(dataset.column_count ?? 0),
+      0,
+    );
+    const totalBytes = datasets.reduce(
+      (total, dataset) => total + Number(dataset.file_size_bytes ?? 0),
+      0,
+    );
+
+    const formatCompact = (value: number) =>
+      new Intl.NumberFormat("en-US", {
+        notation: value >= 10000 ? "compact" : "standard",
+        maximumFractionDigits: value >= 10000 ? 1 : 0,
+      }).format(value);
+
+    const formatStorage = (bytes: number) => {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      if (bytes < 1024 * 1024 * 1024)
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    };
+
+    return {
+      totalDatasets: datasets.length,
+      totalRows: formatCompact(totalRows),
+      totalColumns: formatCompact(totalColumns),
+      totalStorage: formatStorage(totalBytes),
+    };
+  }, [datasets]);
+
+  async function loadDatasets() {
+    if (!token || !organizationId) {
+      return;
+    }
+
+    setDatasetsLoading(true);
+    setDatasetsError("");
+
+    try {
+      const result = await listDatasets(token, organizationId);
+      setDatasets(result);
+    } catch (err) {
+      setDatasetsError(
+        err instanceof Error ? err.message : "Unable to load datasets.",
+      );
+    } finally {
+      setDatasetsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadDatasets();
+  }, [organizationId, token]);
 
   const isCsv = file?.name.toLowerCase().endsWith(".csv") ?? false;
 
@@ -70,6 +144,19 @@ export default function DatasetsPage() {
     try {
       const data = await checkCsvFile(file);
       setResult(data);
+
+      if (data.valid) {
+        if (!token || !organizationId) {
+          setError(
+            "Your session is missing organization data. Please log in again.",
+          );
+          return;
+        }
+
+        await uploadDataset(token, organizationId, file);
+        await loadDatasets();
+        resetUpload();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -87,27 +174,44 @@ export default function DatasetsPage() {
         onAction={() => setShowUpload(true)}
       />
 
+      {datasetsError && (
+        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          {datasetsError}
+        </div>
+      )}
+
       <div className="mb-5 grid gap-4 sm:grid-cols-3">
         <StatCard
           label="Total datasets"
-          value="24"
-          change="+3 this month"
+          value={datasetsLoading ? "..." : String(datasetStats.totalDatasets)}
+          change={
+            datasetsLoading
+              ? "Loading"
+              : `${datasetStats.totalDatasets || 0} active records`
+          }
           icon={Database}
           color="blue"
+          trend="up"
         />
         <StatCard
           label="Total records"
-          value="128.4K"
-          change="+16.2%"
+          value={datasetsLoading ? "..." : datasetStats.totalRows}
+          change={datasets.length ? "+ live count" : "No data yet"}
           icon={Layers3}
           color="violet"
+          trend="up"
         />
         <StatCard
           label="Storage used"
-          value="2.4 GB"
-          change="24% of plan"
+          value={datasetsLoading ? "..." : datasetStats.totalStorage}
+          change={
+            datasets.length
+              ? `${datasetStats.totalColumns} columns tracked`
+              : "No uploads yet"
+          }
           icon={CloudUpload}
           color="emerald"
+          trend="up"
         />
       </div>
 
@@ -119,7 +223,11 @@ export default function DatasetsPage() {
           </p>
         </div>
 
-        <DatasetTable />
+        <DatasetTable
+          datasets={datasets}
+          loading={datasetsLoading}
+          onRefresh={loadDatasets}
+        />
       </section>
 
       {showUpload && (

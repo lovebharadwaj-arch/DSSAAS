@@ -62,7 +62,7 @@ export default function Sidebar({
   setCollapsed,
 }: {
   page: PageKey;
-  setPage: (p: PageKey) => void;
+  setPage: React.Dispatch<React.SetStateAction<any>>;
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
 }) {

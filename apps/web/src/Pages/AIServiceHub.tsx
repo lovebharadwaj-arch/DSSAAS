@@ -213,7 +213,7 @@ function Sidebar({
   setCollapsed,
 }: {
   page: PageKey;
-  setPage: (p: PageKey) => void;
+  setPage: React.Dispatch<React.SetStateAction<any>>;
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
 }) {
@@ -324,10 +324,10 @@ function Topbar({
   setSearch,
   setPage,
 }: {
-  page: PageKey;
+  page: string;
   search: string;
   setSearch: (s: string) => void;
-  setPage: (p: PageKey) => void;
+  setPage: React.Dispatch<React.SetStateAction<any>>;
 }) {
   return (
     <header className="topbar">

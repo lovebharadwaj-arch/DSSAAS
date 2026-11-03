@@ -54,10 +54,8 @@ const FileUpload = ({
     // setValidationResult(null);
 
     try {
-      const isCsv = file.name.toLowerCase().endsWith(".csv");
-
       // Step 1: Validate CSV files before uploading.
-      // if (isCsv) {
+      // if (file.name.toLowerCase().endsWith(".csv")) {
       //   // const result = await checkCsvFile(file);
       //   // setValidationResult(result);
 

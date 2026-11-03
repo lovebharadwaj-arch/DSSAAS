@@ -100,7 +100,7 @@ export default function ServicesPage({
   setPage,
   setService,
 }: {
-  setPage: (p: PageKey) => void;
+  setPage: React.Dispatch<React.SetStateAction<any>>;
   setService: (s: ServiceKey) => void;
 }) {
   return (

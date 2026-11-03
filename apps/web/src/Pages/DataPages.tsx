@@ -28,11 +28,6 @@ const DataPages = () => {
     () => sessionStorage.getItem("organizationId") ?? "",
     [],
   );
-  const datasetId = useMemo(
-    () => sessionStorage.getItem("datasetId") ?? " ",
-    [],
-  );
-
   const loadDatasets = async () => {
     if (!token || !organizationId) {
       navigate("/login");

@@ -11,9 +11,9 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { Activity } from "react";
+import MiniChart from "../component/dashboard/MiniChart";
 import PageHeader from "../component/dashboard/PageHeader";
 import StatCard from "../component/dashboard/StatCard";
-import MiniChart from "../component/dashboard/MiniChart";
 import DatasetTable from "./[service]/DatasetTable";
 
 type PageKey =
@@ -37,7 +37,7 @@ type PageKey =
 export default function Dashboard({
   setPage,
 }: {
-  setPage: (p: PageKey) => void;
+  setPage: React.Dispatch<React.SetStateAction<any>>;
 }) {
   const activity = [
     {

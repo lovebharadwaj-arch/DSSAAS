@@ -7,63 +7,53 @@ import {
   MoreHorizontal,
   Search,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-const initialDatasets = [
-  {
-    name: "Customer Churn",
-    file: "customer_churn.csv",
-    rows: "7,043",
-    cols: 21,
-    status: "Ready",
-    updated: "12 min ago",
-    color: "blue",
-  },
-  {
-    name: "Retail Sales Q3",
-    file: "retail_sales_q3.csv",
-    rows: "18,420",
-    cols: 14,
-    status: "Ready",
-    updated: "Yesterday",
-    color: "violet",
-  },
-  {
-    name: "Marketing Campaign",
-    file: "campaign_results.csv",
-    rows: "3,812",
-    cols: 18,
-    status: "Processing",
-    updated: "2 min ago",
-    color: "amber",
-  },
-  {
-    name: "Product Reviews",
-    file: "product_reviews.csv",
-    rows: "12,608",
-    cols: 8,
-    status: "Ready",
-    updated: "2 days ago",
-    color: "pink",
-  },
-];
+import type { DatasetRecord } from "../../service/datasetService";
 
 function cx(...values: (string | false | null | undefined)[]) {
   return values.filter(Boolean).join(" ");
 }
 
+const palette = ["blue", "violet", "emerald", "amber", "pink", "sky"] as const;
+
 export default function DatasetTable({
   compact = false,
   filter = "",
+  datasets = [],
+  loading = false,
+  onRefresh,
 }: {
   compact?: boolean;
   filter?: string;
+  datasets?: DatasetRecord[];
+  loading?: boolean;
+  onRefresh?: () => void | Promise<void>;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState(filter);
-  const data = initialDatasets.filter((d) =>
-    `${d.name} ${d.file}`.toLowerCase().includes(query.toLowerCase()),
-  );
+
+  const data = useMemo(() => {
+    const filtered = datasets.filter((dataset) => {
+      const name = dataset.name ?? "";
+      const fileName = dataset.original_filename ?? "";
+      return `${name} ${fileName}`.toLowerCase().includes(query.toLowerCase());
+    });
+
+    return filtered.map((dataset, index) => ({
+      id: dataset.id,
+      name: dataset.name ?? "Untitled dataset",
+      file: dataset.original_filename ?? "Unknown file",
+      rows: Number(dataset.row_count ?? 0),
+      cols: Number(dataset.column_count ?? 0),
+      status: dataset.status === "deleted" ? "Archived" : "Ready",
+      updated: dataset.updated_at
+        ? new Date(dataset.updated_at).toLocaleDateString()
+        : "Recently",
+      color: palette[index % palette.length],
+    }));
+  }, [datasets, query]);
+
   return (
     <>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -71,16 +61,20 @@ export default function DatasetTable({
           <Search size={15} />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(event) => setQuery(event.target.value)}
             placeholder="Search datasets..."
           />
         </label>
         {!compact && (
-          <button className="secondary-button">
-            <Filter size={14} /> Filters <ChevronDown size={13} />
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => onRefresh?.()}>
+            <Filter size={14} /> Refresh <ChevronDown size={13} />
           </button>
         )}
       </div>
+
       <div className="overflow-x-auto">
         <table className="data-table">
           <thead>
@@ -89,8 +83,13 @@ export default function DatasetTable({
                 <input
                   type="checkbox"
                   aria-label="Select all"
-                  onChange={(e) =>
-                    setSelected(e.target.checked ? data.map((d) => d.name) : [])
+                  checked={
+                    selected.length > 0 && selected.length === data.length
+                  }
+                  onChange={(event) =>
+                    setSelected(
+                      event.target.checked ? data.map((item) => item.id) : [],
+                    )
                   }
                 />
               </th>
@@ -102,55 +101,58 @@ export default function DatasetTable({
               <th></th>
             </tr>
           </thead>
+
           <tbody>
-            {data.map((d) => (
-              <tr key={d.name}>
+            {data.map((dataset) => (
+              <tr key={dataset.id}>
                 <td>
                   <input
                     type="checkbox"
-                    aria-label={`Select ${d.name}`}
-                    checked={selected.includes(d.name)}
-                    onChange={(e) =>
-                      setSelected(
-                        e.target.checked
-                          ? [...selected, d.name]
-                          : selected.filter((n) => n !== d.name),
+                    aria-label={`Select ${dataset.name}`}
+                    checked={selected.includes(dataset.id)}
+                    onChange={(event) =>
+                      setSelected((current) =>
+                        event.target.checked
+                          ? [...current, dataset.id]
+                          : current.filter((id) => id !== dataset.id),
                       )
                     }
                   />
                 </td>
                 <td>
                   <div className="flex items-center gap-3">
-                    <div className={cx("file-icon", `tone-${d.color}`)}>
+                    <div className={cx("file-icon", `tone-${dataset.color}`)}>
                       <FileSpreadsheet size={17} />
                     </div>
                     <div>
                       <div className="text-xs font-semibold text-slate-100">
-                        {d.name}
+                        {dataset.name}
                       </div>
                       <div className="mt-1 text-[10px] text-slate-500">
-                        {d.file}
+                        {dataset.file}
                       </div>
                     </div>
                   </div>
                 </td>
-                <td className="tabular-nums">{d.rows}</td>
-                <td>{d.cols}</td>
+                <td className="tabular-nums">
+                  {new Intl.NumberFormat("en-US").format(dataset.rows)}
+                </td>
+                <td>{dataset.cols}</td>
                 <td>
                   <span
                     className={cx(
                       "status-pill",
-                      d.status === "Ready"
+                      dataset.status === "Ready"
                         ? "status-ready"
                         : "status-processing",
                     )}>
                     <span className="status-dot" />
-                    {d.status}
+                    {dataset.status}
                   </span>
                 </td>
-                <td className="whitespace-nowrap">{d.updated}</td>
+                <td className="whitespace-nowrap">{dataset.updated}</td>
                 <td>
-                  <button className="icon-button">
+                  <button type="button" className="icon-button">
                     <MoreHorizontal size={16} />
                   </button>
                 </td>
@@ -158,23 +160,42 @@ export default function DatasetTable({
             ))}
           </tbody>
         </table>
-        {data.length === 0 && (
+
+        {!loading && data.length === 0 && (
           <div className="p-8 text-center text-sm text-slate-500">
             No datasets match your search.
           </div>
         )}
+
+        {loading && (
+          <div className="p-8 text-center text-sm text-slate-400">
+            Loading datasets...
+          </div>
+        )}
       </div>
+
       {!compact && (
         <div className="mt-4 flex flex-col gap-3 border-t border-slate-800 pt-4 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <span>Showing {data.length} of 24 datasets · demo data</span>
+          <span>
+            Showing {data.length} of {datasets.length || 0} dataset
+            {datasets.length === 1 ? "" : "s"}
+          </span>
           <div className="flex items-center gap-2">
-            <button className="pagination-button">
+            <button type="button" className="pagination-button">
               <ChevronLeft size={14} />
             </button>
-            <button className="pagination-button pagination-active">1</button>
-            <button className="pagination-button">2</button>
-            <button className="pagination-button">3</button>
-            <button className="pagination-button">
+            <button
+              type="button"
+              className="pagination-button pagination-active">
+              1
+            </button>
+            <button type="button" className="pagination-button">
+              2
+            </button>
+            <button type="button" className="pagination-button">
+              3
+            </button>
+            <button type="button" className="pagination-button">
               <ChevronRight size={14} />
             </button>
           </div>

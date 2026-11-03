@@ -26,9 +26,6 @@ router.use(authenticateToken);
 router.use(requireOrganizationMembership);
 
 router.post("/:datasetId/profile", profileDatasetHandler);
-// Authentication and organization access for every dataset endpoint
-router.use(authenticateToken);
-router.use(requireOrganizationMembership);
 
 // Upload a CSV dataset
 router.post("/", uploadCsv, uploadDatasetHandler);

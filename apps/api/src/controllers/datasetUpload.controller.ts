@@ -8,6 +8,8 @@ import { createDataset } from "../services/datasetUpload.service.ts";
 
 const organizationIdSchema = z.string().uuid();
 
+const datasetNameSchema = z.string().trim().min(1).max(255);
+
 function escapeCsvField(value: unknown): string {
   const text = value == null ? "" : String(value);
 
@@ -20,7 +22,7 @@ function escapeCsvField(value: unknown): string {
 
 function serializeCsv(records: string[][]): string {
   return `${records
-    .map((row) => row.map((cell) => escapeCsvField(cell)).join(","))
+    .map((row) => row.map(escapeCsvField).join(","))
     .join("\n")}\n`;
 }
 
@@ -67,6 +69,7 @@ export async function uploadDatasetHandler(
   const userId = (req as AuthenticatedRequest).user?.id;
   const organizationId = req.params.organizationId;
 
+  // 1. Validate authenticated user
   if (!userId) {
     await removeTemporaryFile(file?.path);
 
@@ -77,6 +80,7 @@ export async function uploadDatasetHandler(
     return;
   }
 
+  // 2. Validate organization ID
   if (
     typeof organizationId !== "string" ||
     !organizationIdSchema.safeParse(organizationId).success
@@ -90,6 +94,7 @@ export async function uploadDatasetHandler(
     return;
   }
 
+  // 3. Validate uploaded file
   if (!file) {
     res.status(400).json({
       success: false,
@@ -99,6 +104,7 @@ export async function uploadDatasetHandler(
   }
 
   try {
+    // 4. Read CSV file
     const csvText = await fs.readFile(file.path, "utf8");
 
     const records: string[][] = parse(csvText, {
@@ -108,11 +114,13 @@ export async function uploadDatasetHandler(
       max_record_size: 1024 * 1024,
     });
 
+    // 5. Validate CSV headers
     if (records.length === 0 || records[0].length === 0) {
       res.status(400).json({
         success: false,
         message: "The CSV file is empty or has no header row.",
       });
+
       await removeTemporaryFile(file.path);
       return;
     }
@@ -124,6 +132,7 @@ export async function uploadDatasetHandler(
         success: false,
         message: "CSV files may contain at most 200 columns.",
       });
+
       await removeTemporaryFile(file.path);
       return;
     }
@@ -133,21 +142,32 @@ export async function uploadDatasetHandler(
         success: false,
         message: "Every CSV column must have a non-empty header.",
       });
+
       await removeTemporaryFile(file.path);
       return;
     }
 
-    const uniqueHeaders = makeUniqueHeaders(headers);
-    const hasDuplicateHeaders =
-      uniqueHeaders.length !== headers.length ||
-      headers.some((header, index) => {
-        const normalized = header.trim().toLowerCase();
-        return (
-          headers.findIndex(
-            (candidate) => candidate.trim().toLowerCase() === normalized,
-          ) !== index
-        );
+    // 6. A dataset must contain at least one data row
+    if (records.length < 2) {
+      res.status(400).json({
+        success: false,
+        message: "CSV must contain a header and at least one data row.",
       });
+
+      await removeTemporaryFile(file.path);
+      return;
+    }
+
+    // 7. Normalize duplicate column names
+    const uniqueHeaders = makeUniqueHeaders(headers);
+
+    const hasDuplicateHeaders = headers.some(
+      (header, index) =>
+        headers.findIndex(
+          (candidate) =>
+            candidate.trim().toLowerCase() === header.toLowerCase(),
+        ) !== index,
+    );
 
     if (hasDuplicateHeaders) {
       records[0] = uniqueHeaders;
@@ -157,20 +177,20 @@ export async function uploadDatasetHandler(
     const finalHeaders = hasDuplicateHeaders ? uniqueHeaders : headers;
     const rowCount = records.length - 1;
 
-    const nameSchema = z.string().trim().min(1).max(255);
-    const nameValidation = nameSchema.safeParse(
-      typeof req.body?.name === "string" ? req.body.name : "",
-    );
+    // 8. Validate dataset name
+    const nameValidation = datasetNameSchema.safeParse(req.body?.name);
 
     if (!nameValidation.success) {
       res.status(400).json({
         success: false,
         message: "Provide a dataset name between 1 and 255 characters.",
       });
+
       await removeTemporaryFile(file.path);
       return;
     }
 
+    // 9. Validate optional description
     let description: string | undefined;
 
     if (req.body?.description !== undefined) {
@@ -182,6 +202,7 @@ export async function uploadDatasetHandler(
           success: false,
           message: "Description must be text with at most 5000 characters.",
         });
+
         await removeTemporaryFile(file.path);
         return;
       }
@@ -189,6 +210,7 @@ export async function uploadDatasetHandler(
       description = req.body.description.trim() || undefined;
     }
 
+    // 10. Save dataset metadata in PostgreSQL
     const dataset = await createDataset({
       organizationId,
       userId,
@@ -204,6 +226,7 @@ export async function uploadDatasetHandler(
       },
     });
 
+    // 11. Return successful response
     res.status(201).json({
       success: true,
       message: "Dataset uploaded and validated successfully.",
@@ -216,16 +239,17 @@ export async function uploadDatasetHandler(
   } catch (error) {
     await removeTemporaryFile(file.path);
 
-    if (error instanceof Error && "code" in error) {
-      const code = (error as NodeJS.ErrnoException).code;
-
-      if (code === "ENOENT") {
-        res.status(400).json({
-          success: false,
-          message: "Uploaded file could not be read.",
-        });
-        return;
-      }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "Uploaded file could not be read.",
+      });
+      return;
     }
 
     console.error("Dataset upload failed:", error);

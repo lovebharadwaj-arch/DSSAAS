@@ -9,10 +9,7 @@ import {
   YAxis,
 } from "recharts";
 import { apiRequest } from "../lib/api";
-import {
-  fetchColumnDistribution,
-  type ColumnDistribution,
-} from "../service/columnDistributionService";
+import { fetchColumnDistribution } from "../service/columnDistributionService";
 import type { DatasetProfile, ProfileApiResponse } from "../types";
 
 interface Props {
@@ -83,47 +80,30 @@ export default function DatasetAnalysisDashboard({
     return [];
   })();
 
-  const [distribution, setDistribution] = useState<ColumnDistribution | null>(
-    null,
-  );
-  const [distributionLoading, setDistributionLoading] = useState(false);
-  const [distributionError, setDistributionError] = useState("");
-
   useEffect(() => {
-    if (!selectedColumn) {
-      setDistribution(null);
+    const columnName = selectedColumn?.name;
+
+    if (!columnName) {
       return;
     }
 
     let cancelled = false;
 
     async function loadDistribution() {
-      setDistributionLoading(true);
-      setDistributionError("");
-      setDistribution(null);
-
       try {
-        const result = await fetchColumnDistribution(
+        await fetchColumnDistribution(
           organizationId,
           datasetId,
-          selectedColumn!.name,
+          columnName,
           token,
         );
-
-        if (!cancelled) {
-          setDistribution(result);
-        }
       } catch (error) {
         if (!cancelled) {
-          setDistributionError(
+          setError(
             error instanceof Error
               ? error.message
               : "Unable to load column distribution.",
           );
-        }
-      } finally {
-        if (!cancelled) {
-          setDistributionLoading(false);
         }
       }
     }

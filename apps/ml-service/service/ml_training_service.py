@@ -1,213 +1,102 @@
-import os
+from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import joblib
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import (
-    RandomForestClassifier,
-    RandomForestRegressor,
-)
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    r2_score,
-)
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
 
+from machineLearning.supervised.trainer import train_supervised
+
+
+# --------------------------------------------------
+# Model Artifact Storage
+# --------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+ARTIFACT_DIR = BASE_DIR / "artifacts"
+
+ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_model_path(model_id: str) -> Path:
+    """
+    Resolve a model ID to its artifact file.
+    Only UUID-based filenames are accepted.
+    """
+    try:
+        validated_id = str(UUID(model_id))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("Invalid model ID.")
+
+    return ARTIFACT_DIR / f"{validated_id}.joblib"
+
+
+# --------------------------------------------------
+# Model Training
+# --------------------------------------------------
 
 def train_model(
     rows: list[dict[str, Any]],
     target_column: str,
     task: str,
+    algorithm: str = "random_forest",
     test_size: float = 0.2,
-    artifact_path: str | None = None,
 ) -> dict[str, Any]:
-    if not rows:
-        raise ValueError("Dataset cannot be empty.")
 
-    if not 0.1 <= test_size <= 0.4:
-        raise ValueError("Test size must be between 0.1 and 0.4.")
-
-    df = pd.DataFrame(rows)
-
-    if target_column not in df.columns:
-        raise ValueError("Target column does not exist.")
-
-    # Remove rows without a target value.
-    df = df.dropna(subset=[target_column])
-
-    if len(df) < 10:
-        raise ValueError("At least 10 usable rows are required.")
-
-    X = df.drop(columns=[target_column])
-    y = df[target_column]
-
-    if X.shape[1] == 0:
-        raise ValueError("Dataset must contain input features.")
-
-    if task == "classification":
-        if y.nunique() < 2:
-            raise ValueError("Classification needs at least two classes.")
-
-        if y.value_counts().min() < 2:
-            raise ValueError(
-                "Each class needs at least two examples for this split."
-            )
-
-        model = RandomForestClassifier(
-            n_estimators=100,
-            random_state=42,
-            class_weight="balanced",
-        )
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
-            test_size=test_size,
-            random_state=42,
-            stratify=y,
-        )
-
-    elif task == "regression":
-        if not pd.api.types.is_numeric_dtype(y):
-            raise ValueError(
-                "Regression requires a numeric target column."
-            )
-
-        model = RandomForestRegressor(
-            n_estimators=100,
-            random_state=42,
-        )
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
-            test_size=test_size,
-            random_state=42,
-        )
-
-    else:
-        raise ValueError(
-            "Task must be classification or regression."
-        )
-
-    numeric_columns = X.select_dtypes(
-        include="number"
-    ).columns.tolist()
-
-    categorical_columns = [
-        column
-        for column in X.columns
-        if column not in numeric_columns
-    ]
-
-    preprocessing = ColumnTransformer(
-        transformers=[
-            (
-                "numeric",
-                SimpleImputer(strategy="median"),
-                numeric_columns,
-            ),
-            (
-                "categorical",
-                Pipeline([
-                    (
-                        "imputer",
-                        SimpleImputer(strategy="most_frequent"),
-                    ),
-                    (
-                        "encoder",
-                        OneHotEncoder(handle_unknown="ignore"),
-                    ),
-                ]),
-                categorical_columns,
-            ),
-        ],
-        remainder="drop",
+    # Train using the existing ML training engine.
+    result = train_supervised(
+        data=pd.DataFrame(rows),
+        target_column=target_column,
+        task=task,
+        algorithm=algorithm,
+        test_size=test_size,
     )
 
-    pipeline = Pipeline([
-        ("preprocessing", preprocessing),
-        ("model", model),
-    ])
+    # Generate a unique model ID.
+    model_id = str(uuid4())
 
-    pipeline.fit(X_train, y_train)
+    # Save the fitted pipeline.
+    artifact_path = get_model_path(model_id)
 
-    predictions = pipeline.predict(X_test)
+    joblib.dump(result["model"], artifact_path)
 
-    if task == "classification":
-        metrics = {
-            "accuracy": round(
-                float(accuracy_score(y_test, predictions)), 4
-            ),
-            "f1_weighted": round(
-                float(
-                    f1_score(
-                        y_test,
-                        predictions,
-                        average="weighted",
-                        zero_division=0,
-                    )
-                ),
-                4,
-            ),
-        }
-    else:
-        metrics = {
-            "mae": round(
-                float(mean_absolute_error(y_test, predictions)), 4
-            ),
-            "r2": round(float(r2_score(y_test, predictions)), 4),
-        }
-
-    artifact_info = None
-    if artifact_path:
-        directory = os.path.dirname(artifact_path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        joblib.dump(pipeline, artifact_path)
-        artifact_info = artifact_path
-
+    # Return only JSON-serializable information.
     return {
-        "task": task,
-        "algorithm": "random_forest",
-        "target_column": target_column,
-        "total_rows": len(df),
-        "training_rows": len(X_train),
-        "testing_rows": len(X_test),
-        "metrics": metrics,
-        "sample_predictions": [
-            {
-                "actual": actual,
-                "predicted": predicted,
-            }
-            for actual, predicted in zip(
-                y_test.head(10).tolist(),
-                predictions[:10].tolist(),
-            )
-        ],
-        "artifact_path": artifact_info,
+        "model_id": model_id,
+        "task": result["task"],
+        "algorithm": result["algorithm"],
+        "target_column": result["target_column"],
+        "total_rows": result["total_rows"],
+        "training_rows": result["training_rows"],
+        "testing_rows": result["testing_rows"],
+        "metrics": result["metrics"],
+        "sample_predictions": result["sample_predictions"],
     }
 
 
-def predict_model(model_path: str, input_data: dict[str, Any]) -> dict[str, Any]:
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model artifact not found: {model_path}")
+# --------------------------------------------------
+# Model Prediction
+# --------------------------------------------------
 
-    model = joblib.load(model_path)
-    feature_frame = pd.DataFrame([input_data])
-    prediction = model.predict(feature_frame)
-    output = prediction[0]
+def predict_model(
+    model_id: str,
+    input_data: dict[str, Any],
+) -> dict[str, Any]:
 
-    if isinstance(output, (np.generic,)):
-        output = output.item()
+    artifact_path = get_model_path(model_id)
+
+    if not artifact_path.is_file():
+        raise FileNotFoundError("Trained model was not found.")
+
+    model = joblib.load(artifact_path)
+
+    input_frame = pd.DataFrame([input_data])
+
+    prediction = model.predict(input_frame)
 
     return {
-        "prediction": output,
-        "model_path": model_path,
+        "model_id": str(UUID(model_id)),
+        "prediction": prediction[0].item()
+        if hasattr(prediction[0], "item")
+        else prediction[0],
     }
