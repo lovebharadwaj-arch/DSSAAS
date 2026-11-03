@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+
 import { parse } from "csv-parse/sync";
 import { pool } from "../config/postragesql.ts";
 
@@ -13,15 +14,18 @@ interface DistributionResponse {
   validCount: number;
   invalidCount?: number;
   uniqueCount?: number;
+
   histogram?: Array<{
     from: number;
     to: number;
     count: number;
   }>;
+
   topValues?: Array<{
     value: string;
     count: number;
   }>;
+
   statistics?: Record<string, number> | null;
   outliers?: {
     count: number;

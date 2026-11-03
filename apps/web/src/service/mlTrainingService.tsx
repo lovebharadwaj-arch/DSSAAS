@@ -72,3 +72,55 @@ export function trainDatasetModel(
     },
   );
 }
+
+export interface TrainingJobSummary {
+  id: string;
+  job_type: string;
+  status: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  parameters?: Record<string, unknown>;
+  result_summary?: Record<string, unknown>;
+}
+
+export interface MLModelSummary {
+  id: string;
+  name: string;
+  algorithm: string;
+  task_type: string;
+  status: string;
+  metrics?: Record<string, number>;
+  artifact_key?: string | null;
+  created_at: string;
+}
+
+export function listTrainingJobs(organizationId: string, token: string) {
+  return apiRequest<{ jobs: TrainingJobSummary[] }>(
+    `/organizations/${encodeURIComponent(organizationId)}/models/jobs`,
+    token,
+  );
+}
+
+export function listModels(organizationId: string, token: string) {
+  return apiRequest<{ models: MLModelSummary[] }>(
+    `/organizations/${encodeURIComponent(organizationId)}/models`,
+    token,
+  );
+}
+
+export function predictModel(
+  organizationId: string,
+  modelId: string,
+  token: string,
+  input: { input_data: Record<string, unknown> },
+) {
+  return apiRequest<{ prediction: unknown; modelId: string }>(
+    `/organizations/${encodeURIComponent(organizationId)}/models/${encodeURIComponent(modelId)}/predict`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}

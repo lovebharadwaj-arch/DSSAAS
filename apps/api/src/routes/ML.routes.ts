@@ -1,52 +1,63 @@
 import { Router } from "express";
-import { trainPythonModel } from "../services/ML.Service.tsx";
+import { trainPythonModel } from "../services/ML.Service.ts";
 
 const router = Router();
 
-// Connect your existing authentication middleware here.
-// Example: router.post("/train", authenticate, async (req, res) => {
-
 router.post("/train", async (req, res) => {
   try {
-    const { datasetId, targetColumn, task, testSize } = req.body;
+    const { rows, targetColumn, task, testSize } = req.body ?? {};
 
-    if (
-      typeof datasetId !== "string" ||
-      !datasetId.trim() ||
-      typeof targetColumn !== "string" ||
-      !targetColumn.trim() ||
-      !["classification", "regression"].includes(task)
-    ) {
+    if (!Array.isArray(rows) || rows.length < 10) {
       return res.status(400).json({
-        message: "Invalid dataset or model configuration.",
+        message: "Training data must be a rows array with at least 10 records.",
       });
     }
 
-    // IMPORTANT:
-    // Replace this with your existing PostgreSQL dataset lookup
-    // and CSV reader. Verify that the authenticated user belongs
-    // to the organization that owns this dataset.
-    //
-    // Expected result:
-    // const rows = await getAuthorizedDatasetRows(
-    //   req.user.id,
-    //   req.user.organizationId,
-    //   datasetId
-    // );
+    if (typeof targetColumn !== "string" || !targetColumn.trim()) {
+      return res.status(400).json({
+        message: "A valid target column is required.",
+      });
+    }
 
-    return res.status(501).json({
-      message:
-        "Connect the existing authorized dataset reader before training.",
-      datasetId,
-      targetColumn,
+    if (task !== "classification" && task !== "regression") {
+      return res.status(400).json({
+        message: "Task must be classification or regression.",
+      });
+    }
+
+    const numericTestSize = Number(testSize ?? 0.2);
+
+    if (
+      !Number.isFinite(numericTestSize) ||
+      numericTestSize < 0.1 ||
+      numericTestSize > 0.4
+    ) {
+      return res.status(400).json({
+        message: "Test size must be between 0.1 and 0.4.",
+      });
+    }
+
+    const result = await trainPythonModel({
+      rows,
+      target_column: targetColumn,
       task,
-      testSize: testSize ?? 0.2,
+      test_size: numericTestSize,
+    });
+
+    return res.status(200).json({
+      message: "Model training completed.",
+      result,
     });
   } catch (error) {
     console.error("ML training route error:", error);
 
-    return res.status(500).json({
-      message: "Unable to start model training.",
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unable to start model training.";
+
+    return res.status(502).json({
+      message,
     });
   }
 });

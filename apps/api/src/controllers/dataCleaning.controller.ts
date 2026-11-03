@@ -10,8 +10,12 @@ const cleaningSchema = z.object({
 });
 
 export async function previewDataCleaningHandler(req: Request, res: Response) {
-  const organizationId = req.params.organizationId;
-  const datasetId = req.params.datasetId;
+  const organizationId = Array.isArray(req.params.organizationId)
+    ? req.params.organizationId[0]
+    : req.params.organizationId;
+  const datasetId = Array.isArray(req.params.datasetId)
+    ? req.params.datasetId[0]
+    : req.params.datasetId;
 
   const orgValidation = uuidSchema.safeParse(organizationId);
   const datasetValidation = uuidSchema.safeParse(datasetId);

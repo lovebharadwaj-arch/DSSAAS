@@ -16,8 +16,10 @@ pydantic==2.14.1
 pydantic_core==2.50.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.4
+python-multipart==0.0.20
 PyYAML==6.0.3
 scikit-learn==1.9.1
+httpx==0.28.1
 scipy==1.18.1
 six==1.17.0
 starlette==1.7.0

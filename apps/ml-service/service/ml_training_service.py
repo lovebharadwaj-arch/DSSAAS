@@ -1,5 +1,7 @@
+import os
 from typing import Any
 
+import joblib
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import (
@@ -23,6 +25,7 @@ def train_model(
     target_column: str,
     task: str,
     test_size: float = 0.2,
+    artifact_path: str | None = None,
 ) -> dict[str, Any]:
     if not rows:
         raise ValueError("Dataset cannot be empty.")
@@ -162,6 +165,14 @@ def train_model(
             "r2": round(float(r2_score(y_test, predictions)), 4),
         }
 
+    artifact_info = None
+    if artifact_path:
+        directory = os.path.dirname(artifact_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        joblib.dump(pipeline, artifact_path)
+        artifact_info = artifact_path
+
     return {
         "task": task,
         "algorithm": "random_forest",
@@ -180,4 +191,23 @@ def train_model(
                 predictions[:10].tolist(),
             )
         ],
+        "artifact_path": artifact_info,
+    }
+
+
+def predict_model(model_path: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model artifact not found: {model_path}")
+
+    model = joblib.load(model_path)
+    feature_frame = pd.DataFrame([input_data])
+    prediction = model.predict(feature_frame)
+    output = prediction[0]
+
+    if isinstance(output, (np.generic,)):
+        output = output.item()
+
+    return {
+        "prediction": output,
+        "model_path": model_path,
     }
