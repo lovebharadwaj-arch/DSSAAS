@@ -1,0 +1,28 @@
+{
+  "model_id": "2607a9b7-2157-458c-a521-f4dc2e92b0d2",
+  "task": "classification",
+  "algorithm": "random_forest",
+  "target_column": "variety",
+  "features": [
+    {
+      "name": "sepal.length",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "sepal.width",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "petal.length",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "petal.width",
+      "type": "number",
+      "nullable": false
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "model_id": "fde261fc-b070-464c-ae20-6e41955f210f",
+  "task": "regression",
+  "algorithm": "random_forest",
+  "target_column": "salary",
+  "features": [
+    {
+      "name": "age",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "experience",
+      "type": "number",
+      "nullable": false
+    }
+  ]
+}

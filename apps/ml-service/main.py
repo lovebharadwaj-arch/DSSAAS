@@ -24,6 +24,7 @@ from service.ml_training_service import (
     train_model,
     predict_model,
     get_model_schema,
+    get_model_artifact_status,
 )
 
 # --------------------------------------------------
@@ -448,3 +449,20 @@ if __name__ == "__main__":
         reload=False,
     )
 
+# --------------------------------------------------
+# Model Artificts
+# --------------------------------------------------
+
+@app.get("/models/{model_id}/artifacts/status")
+def model_artifact_status(model_id: str):
+    try:
+        return get_model_artifact_status(model_id)
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to check model artifact status.",
+        )

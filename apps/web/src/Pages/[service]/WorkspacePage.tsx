@@ -18,12 +18,15 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+
 import {
   getDatasetPreview,
   getDatasets,
+  listModels,
   trainDatasetModel,
   type DatasetOption,
   type DatasetPreview,
+  type MLModelSummary,
   type MLTrainingResponse,
 } from "../../service/mlTrainingService";
 
@@ -140,16 +143,12 @@ function displayCell(value: unknown) {
   return String(value);
 }
 
-/**
- * The API may return the dataset rows directly or wrap them in an object
- * such as { datasets: [...] } / { data: [...] }. Normalize the response
- * before storing it so array methods like find(), map(), and some() are safe.
- */
 function normalizeDatasetOptions(payload: unknown): DatasetOption[] {
   let value: unknown = payload;
 
   for (let depth = 0; depth < 4 && !Array.isArray(value); depth += 1) {
     if (!value || typeof value !== "object") return [];
+
     const record = value as Record<string, unknown>;
     value = record.datasets ?? record.data ?? record.items ?? record.rows;
   }
@@ -175,49 +174,66 @@ function normalizeDatasetOptions(payload: unknown): DatasetOption[] {
     .filter((item) => item.id.length > 0);
 }
 
-/** Normalize common preview response wrappers and guarantee array fields for rendering. */
 function normalizeDatasetPreview(payload: unknown): DatasetPreview | null {
   let value: unknown = payload;
 
-  // APIs commonly wrap the useful payload as { data }, { preview }, or { result }.
   for (let depth = 0; depth < 4; depth += 1) {
-    if (!value || typeof value !== "object" || Array.isArray(value))
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return null;
+    }
+
     const record = value as Record<string, unknown>;
-    if (Array.isArray(record.columns) || Array.isArray(record.rows)) break;
+
+    if (Array.isArray(record.columns) || Array.isArray(record.rows)) {
+      break;
+    }
+
     const nested =
       record.preview ?? record.data ?? record.result ?? record.dataset;
+
     if (!nested || nested === value) break;
+
     value = nested;
   }
 
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
   const record = value as Record<string, unknown>;
   const rawRows = Array.isArray(record.rows) ? record.rows : [];
+
   const rows: Record<string, unknown>[] = rawRows.map((row) => {
     if (row && typeof row === "object" && !Array.isArray(row)) {
       return row as Record<string, unknown>;
     }
+
     return {};
   });
 
   const rawColumns = Array.isArray(record.columns) ? record.columns : [];
+
   const columns = rawColumns
     .map((column) => {
       if (typeof column === "string") return column;
+
       if (column && typeof column === "object") {
         const item = column as Record<string, unknown>;
         const name = item.name ?? item.column ?? item.key;
+
         return typeof name === "string" ? name : "";
       }
+
       return "";
     })
     .filter(Boolean);
 
-  // Some preview endpoints return row objects but omit the columns array.
   const inferredColumns =
     columns.length > 0 ? columns : Object.keys(rows[0] ?? {});
-  if (inferredColumns.length === 0 && rows.length === 0) return null;
+
+  if (inferredColumns.length === 0 && rows.length === 0) {
+    return null;
+  }
 
   return {
     datasetId: String(record.datasetId ?? record.dataset_id ?? ""),
@@ -248,32 +264,65 @@ export default function WorkspacePage({
             ? "Neural network"
             : "Data assistant",
   );
+
   const [algorithm, setAlgorithm] = useState(algorithms[service][0]);
+
   const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   const [datasetId, setDatasetId] = useState("");
   const [preview, setPreview] = useState<DatasetPreview | null>(null);
+
   const [target, setTarget] = useState("");
   const [testSize, setTestSize] = useState(20);
+
   const [loadingDatasets, setLoadingDatasets] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
+
   const [training, setTraining] = useState(false);
+
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
   const [trainingResult, setTrainingResult] =
     useState<MLTrainingResponse | null>(null);
+
+  // Model versioning state
+  const [models, setModels] = useState<MLModelSummary[]>([]);
+  const [sourceModelId, setSourceModelId] = useState("");
+  const [loadingModels, setLoadingModels] = useState(false);
+
   const [organizationId] = useState(
     () => sessionStorage.getItem("organizationId") ?? "",
   );
+
   const [token] = useState(() => sessionStorage.getItem("accessToken") ?? "");
 
   const info = serviceInfo[service];
   const Icon = info.icon;
+
   const selectedDataset = useMemo(
     () => datasets.find((item) => item.id === datasetId),
     [datasets, datasetId],
   );
 
-  // Load organization datasets only for the ML workflow, which is connected to the API.
+  // Only the latest ready version of a matching task can be continued.
+  const availableSourceModels = useMemo(() => {
+    const selectedTask = task.toLowerCase();
+
+    return models.filter(
+      (model) =>
+        model.status === "ready" &&
+        model.is_latest === true &&
+        model.task_type === selectedTask,
+    );
+  }, [models, task]);
+
+  const selectedSourceModel = useMemo(
+    () =>
+      availableSourceModels.find((model) => model.id === sourceModelId) ?? null,
+    [availableSourceModels, sourceModelId],
+  );
+
+  // Load organization datasets.
   useEffect(() => {
     if (service !== "ML") return;
 
@@ -283,15 +332,20 @@ export default function WorkspacePage({
     }
 
     let cancelled = false;
+
     async function loadDatasets() {
       setLoadingDatasets(true);
       setError("");
+
       try {
         const response: unknown = await getDatasets(organizationId, token);
+
         if (cancelled) return;
 
         const result = normalizeDatasetOptions(response);
+
         setDatasets(result);
+
         setDatasetId((current) =>
           current && result.some((item) => item.id === current)
             ? current
@@ -313,13 +367,63 @@ export default function WorkspacePage({
         if (!cancelled) setLoadingDatasets(false);
       }
     }
+
     void loadDatasets();
+
     return () => {
       cancelled = true;
     };
   }, [service, organizationId, token]);
 
-  // Load the real columns and sample rows whenever the selected dataset changes.
+  // Load existing models for version continuation.
+  useEffect(() => {
+    if (service !== "ML") return;
+
+    if (!organizationId || !token) return;
+
+    let cancelled = false;
+
+    async function loadExistingModels() {
+      setLoadingModels(true);
+
+      try {
+        const response = await listModels(organizationId, token);
+
+        if (cancelled) return;
+
+        const modelList = Array.isArray(response.models) ? response.models : [];
+
+        setModels(modelList);
+      } catch (err) {
+        if (!cancelled) {
+          setModels([]);
+          setSourceModelId("");
+
+          console.error("Unable to load existing models:", err);
+        }
+      } finally {
+        if (!cancelled) setLoadingModels(false);
+      }
+    }
+
+    void loadExistingModels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [service, organizationId, token]);
+
+  // Clear an invalid selection when task or available models change.
+  useEffect(() => {
+    if (
+      sourceModelId &&
+      !availableSourceModels.some((model) => model.id === sourceModelId)
+    ) {
+      setSourceModelId("");
+    }
+  }, [availableSourceModels, sourceModelId]);
+
+  // Load dataset preview when the selected dataset changes.
   useEffect(() => {
     if (service !== "ML" || !organizationId || !token || !datasetId) {
       setPreview(null);
@@ -328,6 +432,7 @@ export default function WorkspacePage({
     }
 
     let cancelled = false;
+
     async function loadPreview() {
       setLoadingPreview(true);
       setError("");
@@ -335,24 +440,30 @@ export default function WorkspacePage({
       setPreview(null);
       setTarget("");
       setTrainingResult(null);
+
       try {
         const response: unknown = await getDatasetPreview(
           organizationId,
           datasetId,
           token,
         );
+
         if (cancelled) return;
+
         const result = normalizeDatasetPreview(response);
+
         if (!result) {
           setPreview(null);
           setTarget("");
+
           setError(
             "The dataset preview API returned an unexpected response. Expected columns and rows; check the preview endpoint response in DevTools → Network.",
           );
+
           return;
         }
+
         setPreview(result);
-        // The first column is only a default. The user should confirm the target column.
         setTarget(result.columns[0] ?? "");
       } catch (err) {
         if (!cancelled) {
@@ -366,13 +477,15 @@ export default function WorkspacePage({
         if (!cancelled) setLoadingPreview(false);
       }
     }
+
     void loadPreview();
+
     return () => {
       cancelled = true;
     };
   }, [service, organizationId, token, datasetId]);
 
-  // Reset service-specific selections if the parent switches service without unmounting this page.
+  // Reset service-specific selections.
   useEffect(() => {
     setTask(
       service === "ML"
@@ -385,6 +498,7 @@ export default function WorkspacePage({
               ? "Neural network"
               : "Data assistant",
     );
+
     setAlgorithm(algorithms[service][0]);
   }, [service]);
 
@@ -393,19 +507,33 @@ export default function WorkspacePage({
       setError("Please sign in before training a model.");
       return;
     }
+
     if (!datasetId || !target) {
       setError("Select a dataset and target column before training.");
       return;
     }
+
     if (task !== "Classification" && task !== "Regression") {
       setError(
         "Clustering is not supported by the current Python training endpoint. Choose Classification or Regression.",
       );
       return;
     }
+
     if (!preview?.columns.includes(target)) {
       setError(
         "The selected target column is not present in the dataset preview. Reload the dataset and try again.",
+      );
+      return;
+    }
+
+    // Validate the selected source model before submitting.
+    if (
+      sourceModelId &&
+      !availableSourceModels.some((model) => model.id === sourceModelId)
+    ) {
+      setError(
+        "The selected source model is no longer available. Refresh the model list and select another model.",
       );
       return;
     }
@@ -414,6 +542,7 @@ export default function WorkspacePage({
     setError("");
     setNotice("");
     setTrainingResult(null);
+
     try {
       const result: unknown = await trainDatasetModel(
         organizationId,
@@ -423,6 +552,9 @@ export default function WorkspacePage({
           targetColumn: target,
           task: task.toLowerCase() as "classification" | "regression",
           testSize: testSize / 100,
+
+          // No sourceModelId means create a new model family.
+          ...(sourceModelId ? { sourceModelId } : {}),
         },
       );
 
@@ -439,10 +571,21 @@ export default function WorkspacePage({
           "Training completed, but the API returned an unexpected response structure. Check the training API response.",
         );
       }
+
       setTrainingResult(result as MLTrainingResponse);
+
       setNotice(
-        "Training completed successfully. Review the evaluation metrics below.",
+        selectedSourceModel
+          ? `Training completed successfully. A new version of ${selectedSourceModel.name} has been created.`
+          : "Training completed successfully. A new model family has been created.",
       );
+
+      // Refresh models so the next version becomes selectable.
+      const refreshed = await listModels(organizationId, token);
+
+      if (Array.isArray(refreshed.models)) {
+        setModels(refreshed.models);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Model training failed.");
     } finally {
@@ -455,13 +598,16 @@ export default function WorkspacePage({
       void handleTrainModel();
       return;
     }
+
     setNotice(
       `${info.subtitle} is currently a UI preview. Its execution endpoint has not been connected yet.`,
     );
+
     setError("");
   }
 
   const isMLTaskSupported = task === "Classification" || task === "Regression";
+
   const previewColumns = preview?.columns ?? [];
   const previewRows = preview?.rows ?? [];
 
@@ -472,17 +618,21 @@ export default function WorkspacePage({
           type="button"
           onClick={onBack}
           className="mb-4 flex items-center gap-2 text-xs text-slate-500 transition hover:text-white">
-          <ChevronLeft size={14} /> All services
+          <ChevronLeft size={14} />
+          All services
         </button>
+
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
           <div className="flex items-start gap-4">
             <div className={cx("service-icon h-14 w-14", `tone-${info.color}`)}>
               <Icon size={26} />
             </div>
+
             <div>
               <div className="mb-1 text-[10px] font-bold uppercase tracking-[.18em] text-indigo-300">
                 {info.subtitle}
               </div>
+
               <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
                 {service === "ML"
                   ? "ML Studio"
@@ -494,11 +644,13 @@ export default function WorkspacePage({
                         ? "Vision Studio"
                         : "AI Playground"}
               </h1>
+
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
                 {info.description}
               </p>
             </div>
           </div>
+
           <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-semibold text-emerald-300">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
             {service === "ML" ? "API-connected workflow" : "Workspace preview"}
@@ -514,6 +666,7 @@ export default function WorkspacePage({
           <div className="min-w-0 flex-1">{error}</div>
         </div>
       )}
+
       {notice && (
         <div
           role="status"
@@ -528,10 +681,12 @@ export default function WorkspacePage({
             <div className="mb-5 flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold text-white">Configure workflow</h2>
+
                 <p className="mt-1 text-xs text-slate-500">
                   Choose your data and customize the task
                 </p>
               </div>
+
               <span className="whitespace-nowrap text-[10px] text-slate-500">
                 STEP 01 / 03
               </span>
@@ -540,6 +695,7 @@ export default function WorkspacePage({
             <label htmlFor="workspace-dataset" className="form-label">
               Select dataset
             </label>
+
             {service === "ML" ? (
               <select
                 id="workspace-dataset"
@@ -550,9 +706,11 @@ export default function WorkspacePage({
                 {loadingDatasets && (
                   <option value="">Loading datasets...</option>
                 )}
+
                 {!loadingDatasets && datasets.length === 0 && (
                   <option value="">No datasets available</option>
                 )}
+
                 {datasets.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
@@ -572,11 +730,51 @@ export default function WorkspacePage({
               </select>
             )}
 
+            {/* Model family and version selection */}
+            {service === "ML" && (
+              <div className="mb-5">
+                <label htmlFor="workspace-source-model" className="form-label">
+                  Model versioning
+                </label>
+
+                <select
+                  id="workspace-source-model"
+                  className="form-select"
+                  value={sourceModelId}
+                  disabled={loadingModels || training}
+                  onChange={(event) => {
+                    setSourceModelId(event.target.value);
+                    setError("");
+                    setNotice("");
+                    setTrainingResult(null);
+                  }}>
+                  <option value="">Create a new model (Version 1)</option>
+
+                  {availableSourceModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name} · v{model.version} · {model.algorithm}
+                    </option>
+                  ))}
+                </select>
+
+                <p className="mt-2 text-[10px] leading-5 text-slate-500">
+                  {loadingModels
+                    ? "Loading existing models..."
+                    : selectedSourceModel
+                      ? `Continuing ${selectedSourceModel.name}: the next version will be v${selectedSourceModel.version + 1}.`
+                      : availableSourceModels.length > 0
+                        ? "Select an existing model to create its next version, or create a new model family."
+                        : "No compatible ready models found. Training will create a new model family."}
+                </p>
+              </div>
+            )}
+
             <div className="mb-5 rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition-colors hover:border-slate-700">
               <div className="flex items-center gap-3">
                 <div className="file-icon tone-blue">
                   <FileSpreadsheet size={18} />
                 </div>
+
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-semibold text-white">
                     {service === "ML"
@@ -586,6 +784,7 @@ export default function WorkspacePage({
                           : "No dataset selected"))
                       : "Dataset connection pending"}
                   </div>
+
                   <div className="mt-1 text-[10px] text-slate-500">
                     {service === "ML"
                       ? preview
@@ -596,6 +795,7 @@ export default function WorkspacePage({
                       : "Connect this service to your organization datasets in a later integration step"}
                   </div>
                 </div>
+
                 <span
                   className={cx(
                     "status-pill",
@@ -604,6 +804,7 @@ export default function WorkspacePage({
                       : "border border-slate-700 text-slate-400",
                   )}>
                   <span className="status-dot" />
+
                   {service === "ML"
                     ? loadingPreview
                       ? "Loading"
@@ -613,6 +814,7 @@ export default function WorkspacePage({
                     : "Preview"}
                 </span>
               </div>
+
               <div className="mt-4 grid grid-cols-3 gap-3 border-t border-slate-800 pt-4">
                 <div>
                   <div className="text-lg font-bold text-white">
@@ -624,6 +826,7 @@ export default function WorkspacePage({
                   </div>
                   <div className="text-[10px] text-slate-500">Preview rows</div>
                 </div>
+
                 <div>
                   <div className="text-lg font-bold text-white">
                     {service === "ML"
@@ -634,6 +837,7 @@ export default function WorkspacePage({
                   </div>
                   <div className="text-[10px] text-slate-500">Columns</div>
                 </div>
+
                 <div>
                   <div className="text-lg font-bold text-emerald-300">
                     {service === "ML" && preview ? "Ready" : "—"}
@@ -646,6 +850,7 @@ export default function WorkspacePage({
             </div>
 
             <label className="form-label">Choose task</label>
+
             <div className="mb-5 grid gap-2 sm:grid-cols-2">
               {tasks[service].map((item) => (
                 <button
@@ -655,6 +860,7 @@ export default function WorkspacePage({
                     setTask(item);
                     setError("");
                     setNotice("");
+                    setTrainingResult(null);
                   }}
                   className={cx(
                     "choice-card",
@@ -667,6 +873,7 @@ export default function WorkspacePage({
                     )}>
                     {task === item && <Check size={10} />}
                   </span>
+
                   <span className="text-xs font-medium text-slate-200">
                     {item}
                   </span>
@@ -677,6 +884,7 @@ export default function WorkspacePage({
             <label htmlFor="workspace-algorithm" className="form-label">
               Algorithm / model
             </label>
+
             <select
               id="workspace-algorithm"
               className="form-select mb-5"
@@ -689,6 +897,7 @@ export default function WorkspacePage({
                 </option>
               ))}
             </select>
+
             {service === "ML" && (
               <p className="-mt-3 mb-5 text-[10px] leading-5 text-slate-500">
                 The current Python endpoint selects its algorithm automatically.
@@ -702,6 +911,7 @@ export default function WorkspacePage({
                 <label htmlFor="workspace-target" className="form-label">
                   Target column
                 </label>
+
                 <select
                   id="workspace-target"
                   className="form-select mb-5"
@@ -715,22 +925,26 @@ export default function WorkspacePage({
                         : "No columns available"}
                     </option>
                   )}
+
                   {previewColumns.map((column) => (
                     <option key={column} value={column}>
                       {column}
                     </option>
                   ))}
                 </select>
+
                 <div className="mb-1 flex items-center justify-between gap-3">
                   <label
                     htmlFor="workspace-test-split"
                     className="form-label !mb-0">
                     Test split
                   </label>
+
                   <span className="text-xs font-semibold text-indigo-300">
                     {testSize}%
                   </span>
                 </div>
+
                 <input
                   id="workspace-test-split"
                   type="range"
@@ -741,10 +955,12 @@ export default function WorkspacePage({
                   value={testSize}
                   onChange={(event) => setTestSize(Number(event.target.value))}
                 />
+
                 <div className="mb-5 flex justify-between text-[10px] text-slate-500">
                   <span>10% test · more training data</span>
                   <span>40% test · more evaluation data</span>
                 </div>
+
                 {!isMLTaskSupported && (
                   <p className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200">
                     Clustering is visible in the workspace, but this training
@@ -774,6 +990,7 @@ export default function WorkspacePage({
                 ) : (
                   <Play size={15} />
                 )}
+
                 {training
                   ? "Training model..."
                   : service === "ML"
@@ -781,8 +998,10 @@ export default function WorkspacePage({
                     : service === "AI"
                       ? "Run assistant"
                       : "Configure & continue"}
+
                 <ArrowRight size={14} />
               </button>
+
               <button
                 type="button"
                 className="secondary-button"
@@ -795,6 +1014,7 @@ export default function WorkspacePage({
                 Save draft
               </button>
             </div>
+
             <p className="mt-3 text-[10px] leading-5 text-slate-500">
               {service === "ML"
                 ? "Training sends the selected dataset rows to your Python ML service through the API. Use small datasets for this synchronous workflow."
@@ -806,14 +1026,17 @@ export default function WorkspacePage({
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold text-white">Dataset preview</h2>
+
                 <p className="mt-1 text-xs text-slate-500">
                   {service === "ML"
                     ? "Real sample rows from the selected dataset"
                     : "Sample preview becomes available when the dataset connection is added"}
                 </p>
               </div>
+
               <span className="inline-flex items-center gap-2 rounded-lg border border-slate-800 px-3 py-2 text-[10px] text-slate-400">
-                <Eye size={13} />{" "}
+                <Eye size={13} />
+
                 {loadingPreview
                   ? "Loading"
                   : preview
@@ -821,6 +1044,7 @@ export default function WorkspacePage({
                     : "No preview"}
               </span>
             </div>
+
             {service === "ML" && preview ? (
               <div className="overflow-x-auto rounded-xl border border-slate-800">
                 <table className="data-table min-w-full">
@@ -831,6 +1055,7 @@ export default function WorkspacePage({
                       ))}
                     </tr>
                   </thead>
+
                   <tbody>
                     {previewRows.map((row, rowIndex) => (
                       <tr key={`${datasetId}-${rowIndex}`}>
@@ -854,11 +1079,13 @@ export default function WorkspacePage({
                 ) : (
                   <Database size={22} className="mb-3 text-slate-600" />
                 )}
+
                 <p className="text-xs font-medium text-slate-300">
                   {loadingPreview
                     ? "Loading dataset preview"
                     : "Your data preview will appear here"}
                 </p>
+
                 <p className="mt-1 max-w-sm text-[10px] leading-5 text-slate-500">
                   {service === "ML"
                     ? "Choose a dataset above. Column names and sample values will be loaded from your API."
@@ -873,21 +1100,26 @@ export default function WorkspacePage({
               <div className="mb-4 flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
                 <div>
                   <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[10px] font-semibold text-emerald-300">
-                    <Check size={12} /> Training completed
+                    <Check size={12} />
+                    Training completed
                   </div>
+
                   <h2 className="font-semibold text-white">
                     Model evaluation results
                   </h2>
+
                   <p className="mt-1 text-xs text-slate-400">
                     {trainingResult.result.algorithm} ·{" "}
                     {trainingResult.result.task} · Target:{" "}
                     {trainingResult.result.target_column}
                   </p>
                 </div>
+
                 <span className="text-[10px] text-slate-500">
                   Dataset ID: {trainingResult.datasetId}
                 </span>
               </div>
+
               {Object.keys(trainingResult.result.metrics ?? {}).length > 0 ? (
                 <div className="grid gap-3 sm:grid-cols-2">
                   {Object.entries(trainingResult.result.metrics).map(
@@ -898,6 +1130,7 @@ export default function WorkspacePage({
                         <p className="text-xs capitalize text-slate-400">
                           {formatMetricName(name)}
                         </p>
+
                         <p className="mt-2 break-all text-2xl font-bold text-emerald-300">
                           {typeof value === "number" && Number.isFinite(value)
                             ? value.toFixed(4)
@@ -912,6 +1145,7 @@ export default function WorkspacePage({
                   The training service did not return evaluation metrics.
                 </p>
               )}
+
               <div className="mt-5 grid grid-cols-3 gap-3 border-t border-slate-800 pt-4 text-center">
                 <div>
                   <p className="text-lg font-semibold text-white">
@@ -919,12 +1153,14 @@ export default function WorkspacePage({
                   </p>
                   <p className="text-[10px] text-slate-500">Total rows</p>
                 </div>
+
                 <div>
                   <p className="text-lg font-semibold text-white">
                     {trainingResult.result.training_rows ?? "—"}
                   </p>
                   <p className="text-[10px] text-slate-500">Training rows</p>
                 </div>
+
                 <div>
                   <p className="text-lg font-semibold text-white">
                     {trainingResult.result.testing_rows ?? "—"}
@@ -932,6 +1168,7 @@ export default function WorkspacePage({
                   <p className="text-[10px] text-slate-500">Testing rows</p>
                 </div>
               </div>
+
               {trainingResult.result.sample_predictions?.length ? (
                 <div className="mt-5 overflow-x-auto rounded-xl border border-slate-800">
                   <table className="data-table min-w-full">
@@ -941,6 +1178,7 @@ export default function WorkspacePage({
                         <th>Predicted</th>
                       </tr>
                     </thead>
+
                     <tbody>
                       {trainingResult.result.sample_predictions.map(
                         (prediction, index) => (
@@ -964,8 +1202,10 @@ export default function WorkspacePage({
               <div className="stat-icon tone-violet">
                 <SlidersHorizontal size={17} />
               </div>
+
               <h2 className="font-semibold text-white">Workflow summary</h2>
             </div>
+
             <div className="space-y-4">
               {[
                 { label: "Service", value: service },
@@ -983,6 +1223,12 @@ export default function WorkspacePage({
                     service === "ML" ? "Selected by Python service" : algorithm,
                 },
                 {
+                  label: "Model version",
+                  value: selectedSourceModel
+                    ? `Continue v${selectedSourceModel.version} → v${selectedSourceModel.version + 1}`
+                    : "New model · v1",
+                },
+                {
                   label: "Target",
                   value:
                     service === "ML"
@@ -998,18 +1244,21 @@ export default function WorkspacePage({
                   key={item.label}
                   className="flex items-start justify-between gap-3">
                   <span className="text-xs text-slate-500">{item.label}</span>
+
                   <span className="max-w-[65%] break-words text-right text-xs font-medium text-slate-200">
                     {item.value}
                   </span>
                 </div>
               ))}
             </div>
+
             <div className="mt-5 rounded-xl border border-indigo-400/15 bg-indigo-400/5 p-3">
               <div className="flex gap-2">
                 <Sparkles
                   size={15}
                   className="mt-0.5 shrink-0 text-indigo-300"
                 />
+
                 <p className="text-[11px] leading-5 text-slate-300">
                   {service === "ML"
                     ? "Your training configuration is sent to the API. The backend must verify organization access and dataset ownership before reading the file."
@@ -1022,10 +1271,12 @@ export default function WorkspacePage({
           <section className="panel p-5">
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="font-semibold text-white">Pipeline progress</h2>
+
               <span className="text-[10px] text-slate-500">
                 {trainingResult ? "3 / 3" : training ? "2 / 3" : "0 / 3"}
               </span>
             </div>
+
             {[
               {
                 label: "Data validation",
@@ -1050,16 +1301,13 @@ export default function WorkspacePage({
             ].map((item, index) => {
               const completed = Boolean(trainingResult);
               const current = training && index === 2;
+
               return (
                 <div key={item.label} className="flex gap-3 pb-4 last:pb-0">
                   <div
                     className={cx(
                       "pipeline-step",
-                      completed
-                        ? "pipeline-current"
-                        : current
-                          ? "pipeline-current"
-                          : "",
+                      completed || current ? "pipeline-current" : "",
                     )}>
                     {completed ? (
                       <Check size={12} />
@@ -1069,10 +1317,12 @@ export default function WorkspacePage({
                       index + 1
                     )}
                   </div>
+
                   <div>
                     <div className="text-xs font-medium text-slate-200">
                       {item.label}
                     </div>
+
                     <div className="mt-1 text-[10px] leading-5 text-slate-500">
                       {item.description}
                     </div>
@@ -1085,10 +1335,12 @@ export default function WorkspacePage({
           <section className="panel p-5">
             <div className="flex items-center gap-2">
               <ShieldCheck size={17} className="text-emerald-300" />
+
               <h2 className="text-sm font-semibold text-white">
                 Privacy & security
               </h2>
             </div>
+
             <p className="mt-2 text-xs leading-5 text-slate-500">
               The UI sends requests through your authenticated API. Ensure the
               API checks the user's organization membership and dataset

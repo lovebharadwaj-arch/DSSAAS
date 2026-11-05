@@ -148,3 +148,33 @@ def predict_model(
         "model_id": validate_model_id(model_id),
         "prediction": prediction,
     }
+
+def get_model_artifact_status(model_id: str):
+    """
+    Check whether a model artifact and its feature schema exist.
+    Does not modify or delete any files.
+    """
+
+    model_id = validate_model_id(model_id)
+
+    model_path = get_model_path(model_id)
+    schema_path = get_schema_path(model_id)
+
+    model_exists = model_path.is_file()
+    schema_exists = schema_path.is_file()
+
+    return {
+        "success": True,
+        "model_id": model_id,
+        "artifact": {
+            "exists": model_exists,
+            "filename": model_path.name if model_exists else None,
+            "size_bytes": model_path.stat().st_size if model_exists else None,
+        },
+        "schema": {
+            "exists": schema_exists,
+            "filename": schema_path.name if schema_exists else None,
+            "size_bytes": schema_path.stat().st_size if schema_exists else None,
+        },
+        "complete": model_exists and schema_exists,
+    }

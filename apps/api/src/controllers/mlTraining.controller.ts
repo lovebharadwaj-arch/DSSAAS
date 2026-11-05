@@ -6,19 +6,38 @@ import path from "node:path";
 import { pool } from "../config/postragesql.ts";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.ts";
 import { trainPythonModel } from "../services/ML.Service.ts";
+
 import {
   createModelRecord,
+  createModelVersionRecord,
   createTrainingJob,
+  getModelForOrganization,
   updateTrainingJobStatus,
 } from "../services/mlJob.service.ts";
 
+// IMPORTANT:
+// Change this import path only if uuidSchema is defined in another file.
+
 type TrainingTask = "classification" | "regression";
+
+const uuidSchema = {
+  safeParse(value: unknown) {
+    const success =
+      typeof value === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        value,
+      );
+
+    return { success };
+  },
+};
 
 interface TrainingRequestBody {
   targetColumn?: string;
   task?: TrainingTask;
   algorithm?: string;
   testSize?: number;
+  sourceModelId?: string;
 }
 
 async function loadDatasetRows(
@@ -52,6 +71,10 @@ export async function trainDatasetModelHandler(
   res: Response,
 ): Promise<void> {
   try {
+    // -----------------------------------------
+    // 1. Extract request information
+    // -----------------------------------------
+
     const organizationId = Array.isArray(req.params.organizationId)
       ? req.params.organizationId[0]
       : req.params.organizationId;
@@ -67,10 +90,11 @@ export async function trainDatasetModelHandler(
       task,
       algorithm = "random_forest",
       testSize = 0.2,
+      sourceModelId,
     }: TrainingRequestBody = req.body ?? {};
 
     // -----------------------------------------
-    // 1. Validate request
+    // 2. Validate required IDs
     // -----------------------------------------
 
     if (!organizationId || !datasetId || !userId) {
@@ -81,6 +105,34 @@ export async function trainDatasetModelHandler(
       });
       return;
     }
+
+    if (!uuidSchema.safeParse(organizationId).success) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid organization ID.",
+      });
+      return;
+    }
+
+    if (!uuidSchema.safeParse(datasetId).success) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid dataset ID.",
+      });
+      return;
+    }
+
+    if (!uuidSchema.safeParse(userId).success) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid authenticated user ID.",
+      });
+      return;
+    }
+
+    // -----------------------------------------
+    // 3. Validate training configuration
+    // -----------------------------------------
 
     if (typeof targetColumn !== "string" || !targetColumn.trim()) {
       res.status(400).json({
@@ -124,7 +176,49 @@ export async function trainDatasetModelHandler(
     }
 
     // -----------------------------------------
-    // 2. Verify dataset belongs to organization
+    // 4. Validate optional source model
+    // -----------------------------------------
+
+    let sourceModel: Awaited<
+      ReturnType<typeof getModelForOrganization>
+    > | null = null;
+
+    if (sourceModelId !== undefined && sourceModelId !== null) {
+      if (
+        typeof sourceModelId !== "string" ||
+        !uuidSchema.safeParse(sourceModelId).success
+      ) {
+        res.status(400).json({
+          success: false,
+          message: "Invalid source model ID.",
+        });
+        return;
+      }
+
+      sourceModel = await getModelForOrganization(
+        organizationId,
+        sourceModelId,
+      );
+
+      if (!sourceModel || sourceModel.status !== "ready") {
+        res.status(404).json({
+          success: false,
+          message: "Source model not found or is not ready.",
+        });
+        return;
+      }
+
+      if (sourceModel.task_type !== task) {
+        res.status(400).json({
+          success: false,
+          message: "The new training task must match the source model task.",
+        });
+        return;
+      }
+    }
+
+    // -----------------------------------------
+    // 5. Verify dataset belongs to organization
     // -----------------------------------------
 
     const datasetResult = await pool.query<{
@@ -161,7 +255,7 @@ export async function trainDatasetModelHandler(
     }
 
     // -----------------------------------------
-    // 3. Locate and read CSV
+    // 6. Locate and read CSV
     // -----------------------------------------
 
     const filePath = path.resolve(
@@ -201,7 +295,7 @@ export async function trainDatasetModelHandler(
     }
 
     // -----------------------------------------
-    // 4. Create PostgreSQL training job
+    // 7. Create PostgreSQL training job
     // -----------------------------------------
 
     const job = await createTrainingJob({
@@ -215,7 +309,7 @@ export async function trainDatasetModelHandler(
     });
 
     // -----------------------------------------
-    // 5. Run Python ML training in background
+    // 8. Run Python ML training in background
     // -----------------------------------------
 
     const runJob = async (): Promise<void> => {
@@ -229,11 +323,12 @@ export async function trainDatasetModelHandler(
             task,
             algorithm,
             test_size: testSize,
+            source_model_id: sourceModel?.id ?? null,
           },
           startedAt,
         });
 
-        // Python owns model training and artifact storage.
+        // Python owns training and artifact storage.
         const result = await trainPythonModel({
           rows,
           target_column: targetColumn,
@@ -242,12 +337,19 @@ export async function trainDatasetModelHandler(
           test_size: testSize,
         });
 
-        if (!result || typeof result.model_id !== "string") {
+        if (
+          !result ||
+          typeof result.model_id !== "string" ||
+          !uuidSchema.safeParse(result.model_id).success
+        ) {
           throw new Error("Python ML service did not return a valid model ID.");
         }
 
-        // Save Python model ID in PostgreSQL.
-        const model = await createModelRecord({
+        // -----------------------------------------
+        // 9. Register model or create a new version
+        // -----------------------------------------
+
+        const modelInput = {
           organizationId,
           analysisJobId: job.id,
           name: `${dataset.name} ${task} model`,
@@ -255,9 +357,19 @@ export async function trainDatasetModelHandler(
           taskType: task,
           metrics: (result.metrics ?? {}) as Record<string, number>,
           artifactKey: result.model_id,
-        });
+        };
 
-        // Mark training job completed.
+        const model = sourceModel
+          ? await createModelVersionRecord({
+              ...modelInput,
+              sourceModelId: sourceModel.id,
+            })
+          : await createModelRecord(modelInput);
+
+        // -----------------------------------------
+        // 10. Mark training job completed
+        // -----------------------------------------
+
         await updateTrainingJobStatus(organizationId, job.id, "completed", {
           resultSummary: {
             dataset_id: dataset.id,
@@ -265,8 +377,15 @@ export async function trainDatasetModelHandler(
             task,
             algorithm: result.algorithm ?? algorithm,
             test_size: testSize,
+
             python_model_id: result.model_id,
+
             model_record_id: model.id,
+            model_family_id: model.model_family_id,
+            model_version: model.version,
+
+            source_model_id: sourceModel?.id ?? null,
+
             metrics: result.metrics ?? {},
             total_rows: result.total_rows,
             training_rows: result.training_rows,
@@ -282,25 +401,34 @@ export async function trainDatasetModelHandler(
 
         console.error("Background ML training failed:", error);
 
-        await updateTrainingJobStatus(organizationId, job.id, "failed", {
-          resultSummary: {
-            dataset_id: dataset.id,
-            target_column: targetColumn,
-            task,
-            algorithm,
-            test_size: testSize,
-          },
-          errorMessage: message,
-          startedAt,
-          finishedAt: new Date(),
-        });
+        try {
+          await updateTrainingJobStatus(organizationId, job.id, "failed", {
+            resultSummary: {
+              dataset_id: dataset.id,
+              target_column: targetColumn,
+              task,
+              algorithm,
+              test_size: testSize,
+              source_model_id: sourceModel?.id ?? null,
+            },
+            errorMessage: message,
+            startedAt,
+            finishedAt: new Date(),
+          });
+        } catch (statusError) {
+          console.error(
+            "Unable to update failed training job status:",
+            statusError,
+          );
+        }
       }
     };
 
+    // Do not wait for Python training before returning HTTP 202.
     void runJob();
 
     // -----------------------------------------
-    // 6. Return accepted training job
+    // 11. Return accepted training job
     // -----------------------------------------
 
     res.status(202).json({
@@ -315,6 +443,7 @@ export async function trainDatasetModelHandler(
         task,
         algorithm,
         testSize,
+        sourceModelId: sourceModel?.id ?? null,
         createdAt: job.created_at,
       },
     });
@@ -323,7 +452,7 @@ export async function trainDatasetModelHandler(
 
     const message = error instanceof Error ? error.message : "";
 
-    if (message.includes("aborted")) {
+    if (message.includes("aborted") || message.includes("timeout")) {
       res.status(504).json({
         success: false,
         message: "Python ML service timed out.",

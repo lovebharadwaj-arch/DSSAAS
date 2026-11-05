@@ -1,0 +1,48 @@
+{
+  "model_id": "980d407e-0176-45aa-9b96-ee7198a1ee5e",
+  "task": "regression",
+  "algorithm": "random_forest",
+  "target_column": "h",
+  "features": [
+    {
+      "name": "t",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "tm",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "tm_2",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "slp",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "vv",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "v",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "vm",
+      "type": "number",
+      "nullable": false
+    },
+    {
+      "name": "pm_25",
+      "type": "number",
+      "nullable": false
+    }
+  ]
+}

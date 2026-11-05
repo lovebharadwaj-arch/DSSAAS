@@ -1,3 +1,9 @@
+import type {
+  MLArtifactStatusResponse,
+  MLLatestVersionResponse,
+  MLModelVersionsResponse,
+} from "../service/mlTrainingService";
+
 const API_BASE_URL =
   import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
@@ -47,4 +53,55 @@ export async function apiRequest<T>(
   }
 
   return result as T;
+}
+
+export async function getModelArtifactStatus(
+  organizationId: string,
+  modelId: string,
+): Promise<MLArtifactStatusResponse> {
+  return apiRequest<MLArtifactStatusResponse>(
+    `/organizations/${organizationId}/models/${modelId}/artifacts/status`,
+  );
+}
+
+// ---------------------------------------------
+// Model version history API
+// ---------------------------------------------
+
+export async function listModelVersions(
+  organizationId: string,
+  modelId: string,
+  token: string,
+): Promise<MLModelVersionsResponse> {
+  const response = await apiRequest<MLModelVersionsResponse>(
+    `/organizations/${encodeURIComponent(organizationId)}/models/${encodeURIComponent(modelId)}/versions`,
+    token,
+  );
+
+  if (!response.success || !Array.isArray(response.versions)) {
+    throw new Error("Unable to retrieve model versions.");
+  }
+
+  return response;
+}
+
+// ---------------------------------------------
+// Latest model version API
+// ---------------------------------------------
+
+export async function getLatestModelVersion(
+  organizationId: string,
+  modelId: string,
+  token: string,
+): Promise<MLLatestVersionResponse> {
+  const response = await apiRequest<MLLatestVersionResponse>(
+    `/organizations/${encodeURIComponent(organizationId)}/models/${encodeURIComponent(modelId)}/latest`,
+    token,
+  );
+
+  if (!response.success || !response.model) {
+    throw new Error("Unable to retrieve the latest model version.");
+  }
+
+  return response;
 }

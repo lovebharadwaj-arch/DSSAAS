@@ -13,7 +13,7 @@ export default function StatCard({
   trend = "up",
 }: {
   label: string;
-  value: string;
+  value: string | number;
   change: string;
   icon: React.ElementType;
   color: string;
